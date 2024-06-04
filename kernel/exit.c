@@ -59,6 +59,10 @@
 #include <asm/pgtable.h>
 #include <asm/mmu_context.h>
 
+#if defined(CONFIG_SYSTEM_LOAD_ANALYZER)
+#include <linux/load_analyzer.h>
+#endif
+
 static void exit_mm(struct task_struct * tsk);
 
 static void __unhash_process(struct task_struct *p, bool group_dead)
@@ -901,6 +905,9 @@ void do_exit(long code)
 	struct task_struct *tsk = current;
 	int group_dead;
 
+#if defined(CONFIG_SYSTEM_LOAD_ANALYZER)
+	store_killed_task(tsk);
+#endif
 	profile_task_exit(tsk);
 
 	WARN_ON(blk_needs_flush_plug(tsk));

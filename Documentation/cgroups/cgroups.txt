@@ -298,11 +298,9 @@ a cgroup hierarchy's release_agent path is empty.
 1.5 What does clone_children do ?
 ---------------------------------
 
-If the clone_children flag is enabled (1) in a cgroup, then all
-cgroups created beneath will call the post_clone callbacks for each
-subsystem of the newly created cgroup. Usually when this callback is
-implemented for a subsystem, it copies the values of the parent
-subsystem, this is the case for the cpuset.
+This flag only affects the cpuset controller. If the clone_children
+flag is enabled (1) in a cgroup, a new cpuset cgroup will copy its
+configuration from the parent during initialization.
 
 1.6 How do I use cgroups ?
 --------------------------
@@ -592,6 +590,15 @@ there are not tasks in the cgroup. If pre_destroy() returns error code,
 rmdir() will fail with it. From this behavior, pre_destroy() can be
 called multiple times against a cgroup.
 
+int allow_attach(struct cgroup *cgrp, struct cgroup_taskset *tset)
+(cgroup_mutex held by caller)
+
+Called prior to moving a task into a cgroup; if the subsystem
+returns an error, this will abort the attach operation.  Used
+to extend the permission checks - if all subsystems in a cgroup
+return 0, the attach will be allowed to proceed, even if the
+default permission check (root or same user) fails.
+
 int can_attach(struct cgroup *cgrp, struct cgroup_taskset *tset)
 (cgroup_mutex held by caller)
 
@@ -646,14 +653,6 @@ calls to cgroup_add_file() with objects of type cftype (see
 include/linux/cgroup.h for details).  Note that although this
 method can return an error code, the error code is currently not
 always handled well.
-
-void post_clone(struct cgroup *cgrp)
-(cgroup_mutex held by caller)
-
-Called during cgroup_create() to do any parameter
-initialization which might be required before a task could attach.  For
-example in cpusets, no task may attach before 'cpus' and 'mems' are set
-up.
 
 void bind(struct cgroup *root)
 (cgroup_mutex and ss->hierarchy_mutex held by caller)

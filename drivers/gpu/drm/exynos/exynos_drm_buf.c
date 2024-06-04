@@ -30,93 +30,122 @@
 #include "exynos_drm_drv.h"
 #include "exynos_drm_gem.h"
 #include "exynos_drm_buf.h"
+#include "exynos_drm_iommu.h"
+
+static struct sg_table *exynos_pages_to_sg(struct page **pages, int nr_pages)
+{
+	struct sg_table *sgt = NULL;
+	int ret;
+
+	sgt = kzalloc(sizeof(*sgt), GFP_KERNEL);
+	if (!sgt)
+		return ERR_PTR(-ENOMEM);
+
+	ret = sg_alloc_table_from_pages(sgt, pages, nr_pages,
+			0, PAGE_SIZE * nr_pages, GFP_KERNEL);
+	if (ret) {
+		kfree(sgt);
+		return ERR_PTR(ret);
+	}
+
+	return sgt;
+}
 
 static int lowlevel_buffer_allocate(struct drm_device *dev,
 		unsigned int flags, struct exynos_drm_gem_buf *buf)
 {
-	dma_addr_t start_addr;
-	unsigned int npages, page_size, i = 0;
-	struct scatterlist *sgl;
 	int ret = 0;
+	enum dma_attr attr = DMA_ATTR_SKIP_BUFFER_CLEAR;
+	unsigned int nr_pages;
 
 	DRM_DEBUG_KMS("%s\n", __FILE__);
-
-	if (IS_NONCONTIG_BUFFER(flags)) {
-		DRM_DEBUG_KMS("not support allocation type.\n");
-		return -EINVAL;
-	}
 
 	if (buf->dma_addr) {
 		DRM_DEBUG_KMS("already allocated.\n");
 		return 0;
 	}
 
-	if (buf->size >= SZ_1M) {
-		npages = buf->size >> SECTION_SHIFT;
-		page_size = SECTION_SIZE;
-	} else if (buf->size >= SZ_64K) {
-		npages = buf->size >> 16;
-		page_size = SZ_64K;
+	init_dma_attrs(&buf->dma_attrs);
+	dma_set_attr(attr, &buf->dma_attrs);
+
+	/*
+	 * if EXYNOS_BO_CONTIG, fully physically contiguous memory
+	 * region will be allocated else physically contiguous
+	 * as possible.
+	 */
+	if (!(flags & EXYNOS_BO_NONCONTIG)) {
+		attr = DMA_ATTR_FORCE_CONTIGUOUS;
+		dma_set_attr(attr, &buf->dma_attrs);
+	}
+
+	/*
+	 * if EXYNOS_BO_WC or EXYNOS_BO_NONCACHABLE, writecombine mapping
+	 * else cachable mapping.
+	 */
+	if (flags & EXYNOS_BO_WC || !(flags & EXYNOS_BO_CACHABLE)) {
+		dma_set_attr(DMA_ATTR_WRITE_COMBINE, &buf->dma_attrs);
+		dma_set_attr(DMA_ATTR_SKIP_CPU_SYNC, &buf->dma_attrs);
+	} else
+		dma_set_attr(DMA_ATTR_NON_CONSISTENT, &buf->dma_attrs);
+
+	dma_set_attr(DMA_ATTR_NO_KERNEL_MAPPING, &buf->dma_attrs);
+
+	nr_pages = buf->size >> PAGE_SHIFT;
+
+	if (is_drm_iommu_supported(dev)) {
+		buf->pages = dma_alloc_attrs(dev->dev, buf->size,
+					&buf->dma_addr, GFP_KERNEL,
+					&buf->dma_attrs);
+		if (!buf->pages) {
+			DRM_ERROR("failed to allocate buffer.\n");
+			return -ENOMEM;
+		}
 	} else {
-		npages = buf->size >> PAGE_SHIFT;
-		page_size = PAGE_SIZE;
+		dma_addr_t start_addr;
+		unsigned int i = 0;
+
+		buf->pages = drm_calloc_large(nr_pages, sizeof(struct page *));
+		if (!buf->pages) {
+			DRM_ERROR("failed to allocate pages.\n");
+			return -ENOMEM;
+		}
+
+		buf->kvaddr = dma_alloc_attrs(dev->dev, buf->size,
+					&buf->dma_addr, GFP_KERNEL,
+					&buf->dma_attrs);
+		if (!buf->kvaddr) {
+			DRM_ERROR("failed to allocate buffer.\n");
+			drm_free_large(buf->pages);
+			return -ENOMEM;
+		}
+
+		start_addr = buf->dma_addr;
+		while (i < nr_pages) {
+			buf->pages[i] = phys_to_page(start_addr);
+			start_addr += PAGE_SIZE;
+			i++;
+		}
 	}
 
-	buf->sgt = kzalloc(sizeof(struct sg_table), GFP_KERNEL);
-	if (!buf->sgt) {
-		DRM_ERROR("failed to allocate sg table.\n");
-		return -ENOMEM;
+	buf->sgt = exynos_pages_to_sg(buf->pages, nr_pages);
+	if (IS_ERR(buf->sgt)) {
+		DRM_ERROR("failed to get sg table.\n");
+		ret = PTR_ERR(buf->sgt);
+		goto err_free_attrs;
 	}
 
-	ret = sg_alloc_table(buf->sgt, npages, GFP_KERNEL);
-	if (ret < 0) {
-		DRM_ERROR("failed to initialize sg table.\n");
-		kfree(buf->sgt);
-		buf->sgt = NULL;
-		return -ENOMEM;
-	}
-
-	buf->kvaddr = dma_alloc_writecombine(dev->dev, buf->size,
-			&buf->dma_addr, GFP_KERNEL);
-	if (!buf->kvaddr) {
-		DRM_ERROR("failed to allocate buffer.\n");
-		ret = -ENOMEM;
-		goto err1;
-	}
-
-	buf->pages = kzalloc(sizeof(struct page) * npages, GFP_KERNEL);
-	if (!buf->pages) {
-		DRM_ERROR("failed to allocate pages.\n");
-		ret = -ENOMEM;
-		goto err2;
-	}
-
-	sgl = buf->sgt->sgl;
-	start_addr = buf->dma_addr;
-
-	while (i < npages) {
-		buf->pages[i] = phys_to_page(start_addr);
-		sg_set_page(sgl, buf->pages[i], page_size, 0);
-		sg_dma_address(sgl) = start_addr;
-		start_addr += page_size;
-		sgl = sg_next(sgl);
-		i++;
-	}
-
-	DRM_DEBUG_KMS("vaddr(0x%lx), dma_addr(0x%lx), size(0x%lx)\n",
-			(unsigned long)buf->kvaddr,
-			(unsigned long)buf->dma_addr,
-			buf->size);
+	DRM_DEBUG_KMS("dma_addr(0x%lx), size(0x%lx)\n",
+			(unsigned long)buf->dma_addr, buf->size);
 
 	return ret;
-err2:
-	dma_free_writecombine(dev->dev, buf->size, buf->kvaddr,
-			(dma_addr_t)buf->dma_addr);
+
+err_free_attrs:
+	dma_free_attrs(dev->dev, buf->size, buf->pages,
+			(dma_addr_t)buf->dma_addr, &buf->dma_attrs);
 	buf->dma_addr = (dma_addr_t)NULL;
-err1:
-	sg_free_table(buf->sgt);
-	kfree(buf->sgt);
-	buf->sgt = NULL;
+
+	if (!is_drm_iommu_supported(dev))
+		drm_free_large(buf->pages);
 
 	return ret;
 }
@@ -126,36 +155,27 @@ static void lowlevel_buffer_deallocate(struct drm_device *dev,
 {
 	DRM_DEBUG_KMS("%s.\n", __FILE__);
 
-	/*
-	 * release only physically continuous memory and
-	 * non-continuous memory would be released by exynos
-	 * gem framework.
-	 */
-	if (IS_NONCONTIG_BUFFER(flags)) {
-		DRM_DEBUG_KMS("not support allocation type.\n");
-		return;
-	}
-
 	if (!buf->dma_addr) {
 		DRM_DEBUG_KMS("dma_addr is invalid.\n");
 		return;
 	}
 
-	DRM_DEBUG_KMS("vaddr(0x%lx), dma_addr(0x%lx), size(0x%lx)\n",
-			(unsigned long)buf->kvaddr,
-			(unsigned long)buf->dma_addr,
-			buf->size);
+	DRM_DEBUG_KMS("dma_addr(0x%lx), size(0x%lx)\n",
+			(unsigned long)buf->dma_addr, buf->size);
 
 	sg_free_table(buf->sgt);
 
 	kfree(buf->sgt);
 	buf->sgt = NULL;
 
-	kfree(buf->pages);
-	buf->pages = NULL;
+	if (!is_drm_iommu_supported(dev)) {
+		dma_free_attrs(dev->dev, buf->size, buf->kvaddr,
+				(dma_addr_t)buf->dma_addr, &buf->dma_attrs);
+		drm_free_large(buf->pages);
+	} else
+		dma_free_attrs(dev->dev, buf->size, buf->pages,
+				(dma_addr_t)buf->dma_addr, &buf->dma_attrs);
 
-	dma_free_writecombine(dev->dev, buf->size, buf->kvaddr,
-				(dma_addr_t)buf->dma_addr);
 	buf->dma_addr = (dma_addr_t)NULL;
 }
 
@@ -197,7 +217,7 @@ int exynos_drm_alloc_buf(struct drm_device *dev,
 
 	/*
 	 * allocate memory region and set the memory information
-	 * to vaddr and dma_addr of a buffer object.
+	 * to dma_addr of a buffer object.
 	 */
 	if (lowlevel_buffer_allocate(dev, flags, buf) < 0)
 		return -ENOMEM;

@@ -218,6 +218,18 @@ static void dump_common_audit_data(struct audit_buffer *ab,
 	if (tsk && tsk->pid) {
 		audit_log_format(ab, " pid=%d comm=", tsk->pid);
 		audit_log_untrustedstring(ab, tsk->comm);
+
+		if (tsk->parent) {
+			audit_log_format(ab, " ppid=%d pcomm=",
+					tsk->parent->pid);
+			audit_log_untrustedstring(ab, tsk->parent->comm);
+		}
+		if (tsk->real_parent &&
+		    (tsk->real_parent->pid != tsk->parent->pid)) {
+			audit_log_format(ab, " rppid=%d rpcomm=",
+					tsk->real_parent->pid);
+			audit_log_untrustedstring(ab, tsk->real_parent->comm);
+		}
 	}
 
 	switch (a->type) {

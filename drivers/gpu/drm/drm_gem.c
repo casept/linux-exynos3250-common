@@ -94,6 +94,7 @@ drm_gem_init(struct drm_device *dev)
 
 	spin_lock_init(&dev->object_name_lock);
 	idr_init(&dev->object_name_idr);
+	mutex_init(&dev->prime_lock);
 
 	mm = kzalloc(sizeof(struct drm_gem_mm), GFP_KERNEL);
 	if (!mm) {
@@ -201,6 +202,19 @@ free:
 }
 EXPORT_SYMBOL(drm_gem_object_alloc);
 
+static void
+drm_gem_remove_prime_handles(struct drm_gem_object *obj, struct drm_file *filp)
+{
+	if (obj->import_attach) {
+		drm_prime_remove_imported_buf_handle(&filp->prime,
+				obj->import_attach->dmabuf);
+	}
+	if (obj->export_dma_buf) {
+		drm_prime_remove_imported_buf_handle(&filp->prime,
+				obj->export_dma_buf);
+	}
+}
+
 /**
  * Removes the mapping from handle to filp for this object.
  */
@@ -227,15 +241,18 @@ drm_gem_handle_delete(struct drm_file *filp, u32 handle)
 		spin_unlock(&filp->table_lock);
 		return -EINVAL;
 	}
+
+#ifdef CONFIG_SLP_LOWMEM_NOTIFY
+	add_mm_counter(current->mm, MM_ANONPAGES, -(obj->size>>PAGE_SHIFT));
+#endif
+
 	dev = obj->dev;
 
 	/* Release reference and decrement refcount. */
 	idr_remove(&filp->object_idr, handle);
 	spin_unlock(&filp->table_lock);
 
-	if (obj->import_attach)
-		drm_prime_remove_imported_buf_handle(&filp->prime,
-				obj->import_attach->dmabuf);
+	drm_gem_remove_prime_handles(obj, filp);
 
 	if (dev->driver->gem_close_object)
 		dev->driver->gem_close_object(obj, filp);
@@ -277,6 +294,10 @@ again:
 		return ret;
 
 	drm_gem_object_handle_reference(obj);
+
+#ifdef CONFIG_SLP_LOWMEM_NOTIFY
+	add_mm_counter(current->mm, MM_ANONPAGES, obj->size>>PAGE_SHIFT);
+#endif
 
 	if (dev->driver->gem_open_object) {
 		ret = dev->driver->gem_open_object(obj, file_priv);
@@ -470,6 +491,10 @@ again:
 
 err:
 	drm_gem_object_unreference_unlocked(obj);
+
+	DRM_DEBUG("%s:hdl[%d]obj[0x%x]name[%d]\n",
+		__func__, (int) args->handle, (int)obj, args->name);
+
 	return ret;
 }
 
@@ -507,6 +532,10 @@ drm_gem_open_ioctl(struct drm_device *dev, void *data,
 	args->handle = handle;
 	args->size = obj->size;
 
+	DRM_DEBUG("%s:name[%d]obj[0x%x]hdl[%d]sz[%d]\n",
+		__func__, (int) args->name, (int)obj,
+		args->handle, (int)args->size);
+
 	return 0;
 }
 
@@ -532,9 +561,7 @@ drm_gem_object_release_handle(int id, void *ptr, void *data)
 	struct drm_gem_object *obj = ptr;
 	struct drm_device *dev = obj->dev;
 
-	if (obj->import_attach)
-		drm_prime_remove_imported_buf_handle(&file_priv->prime,
-				obj->import_attach->dmabuf);
+	drm_gem_remove_prime_handles(obj, file_priv);
 
 	if (dev->driver->gem_close_object)
 		dev->driver->gem_close_object(obj, file_priv);

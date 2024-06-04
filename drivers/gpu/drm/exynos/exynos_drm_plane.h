@@ -9,6 +9,17 @@
  *
  */
 
-int exynos_plane_init(struct drm_device *dev, unsigned int nr);
-int exynos_plane_set_zpos_ioctl(struct drm_device *dev, void *data,
-				struct drm_file *file_priv);
+int exynos_plane_mode_set(struct drm_plane *plane, struct drm_crtc *crtc,
+			  struct drm_framebuffer *fb,
+			  struct exynos_drm_pos crtc_pos,
+			  struct exynos_drm_pos src_pos, bool sync);
+void exynos_plane_commit(struct drm_plane *plane);
+void exynos_plane_request_partial_update(struct drm_plane *plane);
+void exynos_plane_adjust_partial_region(struct drm_plane *plane,
+			struct exynos_drm_pos *pos);
+void exynos_plane_partial_resolution(struct drm_plane *plane,
+				struct exynos_drm_pos *pos);
+void exynos_plane_dpms(struct drm_plane *plane, int mode);
+struct drm_plane *exynos_plane_init(struct drm_device *dev,
+				    unsigned int possible_crtcs, bool priv);
+unsigned int get_planes_cnt_enabled(struct drm_device *drm_dev);

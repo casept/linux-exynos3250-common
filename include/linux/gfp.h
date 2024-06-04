@@ -23,6 +23,7 @@ struct vm_area_struct;
 #define ___GFP_REPEAT		0x400u
 #define ___GFP_NOFAIL		0x800u
 #define ___GFP_NORETRY		0x1000u
+#define ___GFP_CMA		0x2000u
 #define ___GFP_COMP		0x4000u
 #define ___GFP_ZERO		0x8000u
 #define ___GFP_NOMEMALLOC	0x10000u
@@ -47,6 +48,7 @@ struct vm_area_struct;
  * without the underscores and use them consistently. The definitions here may
  * be used in bit comparisons.
  */
+#define __GFP_CMA	((__force gfp_t)___GFP_CMA)
 #define __GFP_DMA	((__force gfp_t)___GFP_DMA)
 #define __GFP_HIGHMEM	((__force gfp_t)___GFP_HIGHMEM)
 #define __GFP_DMA32	((__force gfp_t)___GFP_DMA32)
@@ -158,7 +160,8 @@ static inline int allocflags_to_migratetype(gfp_t gfp_flags)
 
 	/* Group based on mobility */
 	return (((gfp_flags & __GFP_MOVABLE) != 0) << 1) |
-		((gfp_flags & __GFP_RECLAIMABLE) != 0);
+		((gfp_flags & __GFP_RECLAIMABLE) != 0) |
+		(((gfp_flags & __GFP_CMA) != 0) + (((gfp_flags & __GFP_CMA) != 0) << 1));
 }
 
 #ifdef CONFIG_HIGHMEM
@@ -390,5 +393,18 @@ static inline bool pm_suspended_storage(void)
 	return false;
 }
 #endif /* CONFIG_PM_SLEEP */
+
+#ifdef CONFIG_DMA_CMA
+
+/* The below functions must be run on a range from a single zone. */
+extern int alloc_contig_range(unsigned long start, unsigned long end,
+			      unsigned migratetype);
+extern void free_contig_range(unsigned long pfn, unsigned nr_pages);
+extern int cma_perform_rebalance(void);
+
+/* CMA stuff */
+extern void init_cma_reserved_pageblock(struct page *page);
+
+#endif
 
 #endif /* __LINUX_GFP_H */

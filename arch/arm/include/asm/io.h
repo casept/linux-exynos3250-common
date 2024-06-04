@@ -27,6 +27,9 @@
 #include <asm/byteorder.h>
 #include <asm/memory.h>
 #include <asm-generic/pci_iomap.h>
+#ifdef CONFIG_SEC_DEBUG_REG_ACCESS
+#include <linux/regs_debug.h>
+#endif
 
 /*
  * ISA I/O bus memory addresses are 1:1 with the physical address.
@@ -47,6 +50,46 @@ extern void __raw_readsb(const void __iomem *addr, void *data, int bytelen);
 extern void __raw_readsw(const void __iomem *addr, void *data, int wordlen);
 extern void __raw_readsl(const void __iomem *addr, void *data, int longlen);
 
+#ifdef CONFIG_SEC_DEBUG_REG_ACCESS
+extern struct sec_debug_regs_access sec_debug_last_regs_access[NR_CPUS];
+#define __raw_writeb(v,a)	({sec_debug_regs_write_start(v, a); \
+		__chk_io_ptr(a); \
+		*(volatile unsigned char __force  *)(a) = (v); \
+		sec_debug_regs_access_done(); \
+		})
+#define __raw_writew(v,a)	({sec_debug_regs_write_start(v, a); \
+		__chk_io_ptr(a); \
+		*(volatile unsigned short __force *)(a) = (v); \
+		sec_debug_regs_access_done(); \
+		})
+#define __raw_writel(v,a)	({sec_debug_regs_write_start(v, a); \
+		__chk_io_ptr(a); \
+		*(volatile unsigned int __force   *)(a) = (v); \
+		sec_debug_regs_access_done(); \
+		})
+
+#define __raw_readb(a)		({volatile unsigned char v; \
+		sec_debug_regs_read_start(a); \
+		__chk_io_ptr(a); \
+		v = *(volatile unsigned char __force  *)(a); \
+		sec_debug_regs_access_done(); \
+		v; \
+		})
+#define __raw_readw(a)		({volatile unsigned short v; \
+		sec_debug_regs_read_start(a); \
+		__chk_io_ptr(a); \
+		v = *(volatile unsigned short __force *)(a); \
+		sec_debug_regs_access_done(); \
+		v; \
+		})
+#define __raw_readl(a)		({volatile unsigned int v; \
+		sec_debug_regs_read_start(a); \
+		__chk_io_ptr(a); \
+		v = *(volatile unsigned int __force   *)(a); \
+		sec_debug_regs_access_done(); \
+		v; \
+		})
+#else /* !CONFIG_SEC_DEBUG_REG_ACCESS */
 #define __raw_writeb(v,a)	(__chk_io_ptr(a), *(volatile unsigned char __force  *)(a) = (v))
 #define __raw_writew(v,a)	(__chk_io_ptr(a), *(volatile unsigned short __force *)(a) = (v))
 #define __raw_writel(v,a)	(__chk_io_ptr(a), *(volatile unsigned int __force   *)(a) = (v))
@@ -54,6 +97,7 @@ extern void __raw_readsl(const void __iomem *addr, void *data, int longlen);
 #define __raw_readb(a)		(__chk_io_ptr(a), *(volatile unsigned char __force  *)(a))
 #define __raw_readw(a)		(__chk_io_ptr(a), *(volatile unsigned short __force *)(a))
 #define __raw_readl(a)		(__chk_io_ptr(a), *(volatile unsigned int __force   *)(a))
+#endif /* CONFIG_SEC_DEBUG_REG_ACCESS */
 
 /*
  * Architecture ioremap implementation.

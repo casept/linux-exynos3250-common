@@ -36,6 +36,7 @@ enum hrtimer_mode {
 	HRTIMER_MODE_PINNED = 0x02,	/* Timer is bound to CPU */
 	HRTIMER_MODE_ABS_PINNED = 0x02,
 	HRTIMER_MODE_REL_PINNED = 0x03,
+	HRTIMER_MODE_DEFERRABLE = 0x04, /* Timer is deferrable */
 };
 
 /*
@@ -157,7 +158,8 @@ enum  hrtimer_base_type {
 	HRTIMER_BASE_MONOTONIC,
 	HRTIMER_BASE_REALTIME,
 	HRTIMER_BASE_BOOTTIME,
-	HRTIMER_MAX_CLOCK_BASES,
+	HRTIMER_MAX_STD_BASES,
+	HRTIMER_MAX_CLOCK_BASES = 2 * HRTIMER_MAX_STD_BASES,
 };
 
 /*
@@ -174,7 +176,9 @@ enum  hrtimer_base_type {
  * @nr_retries:		Total number of hrtimer interrupt retries
  * @nr_hangs:		Total number of hrtimer interrupt hangs
  * @max_hang_time:	Maximum time spent in hrtimer_interrupt
- * @clock_base:		array of clock bases for this cpu
+ * @clock_base:		array of clock bases for this cpu. The array size is
+ *			twice the MAX_STD_BASES size. The second part is
+ *			a duplication of the first for deferrable timers.
  */
 struct hrtimer_cpu_base {
 	raw_spinlock_t			lock;
@@ -458,4 +462,12 @@ extern u64 ktime_divns(const ktime_t kt, s64 div);
 /* Show pending timers: */
 extern void sysrq_timer_list_show(void);
 
+#ifdef CONFIG_CGROUP_TIMER_SLACK
+extern unsigned long task_get_cgroup_timer_mode(struct task_struct *tsk);
+#else
+static inline unsigned long task_get_cgroup_timer_mode(struct task_struct *tsk)
+{
+	return HRTIMER_MODE_ABS;
+}
+#endif
 #endif

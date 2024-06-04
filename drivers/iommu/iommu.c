@@ -82,6 +82,11 @@ static void iommu_bus_init(struct bus_type *bus, struct iommu_ops *ops)
 	bus_for_each_dev(bus, NULL, NULL, add_iommu_group);
 }
 
+static void iommu_tlb_flush_all(struct iommu_domain *domain)
+{
+	domain->ops->tlb_flush_all(domain);
+}
+
 /**
  * bus_set_iommu - set iommu-callbacks for the bus
  * @bus: bus.
@@ -217,8 +222,10 @@ int iommu_map(struct iommu_domain *domain, unsigned long iova,
 	size_t orig_size = size;
 	int ret = 0;
 
-	if (unlikely(domain->ops->map == NULL))
+	if (unlikely(domain->ops->map == NULL)) {
+		pr_err("domain->ops->map is null\n");
 		return -ENODEV;
+	}
 
 	/* find out the minimum page size supported */
 	min_pagesz = 1 << __ffs(domain->ops->pgsize_bitmap);
@@ -328,6 +335,8 @@ size_t iommu_unmap(struct iommu_domain *domain, unsigned long iova, size_t size)
 		iova += unmapped_page;
 		unmapped += unmapped_page;
 	}
+
+	iommu_tlb_flush_all(domain);
 
 	return unmapped;
 }

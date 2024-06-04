@@ -15,6 +15,16 @@ config OPROFILE
 
 	  If unsure, say N.
 
+config SWAP_DA
+       tristate "System Wide Analysis of Performance"
+       depends on ARM || X86
+       select KALLSYMS
+       select DEBUG_FS
+       help
+         SWAP is a profiling tool.
+
+	   If unsure, say Y.
+
 config OPROFILE_EVENT_MULTIPLEX
 	bool "OProfile multiplexing support (EXPERIMENTAL)"
 	default n
@@ -140,6 +150,9 @@ config HAVE_ARCH_TRACEHOOK
 	bool
 
 config HAVE_DMA_ATTRS
+	bool
+
+config HAVE_DMA_CONTIGUOUS
 	bool
 
 config USE_GENERIC_SMP_HELPERS

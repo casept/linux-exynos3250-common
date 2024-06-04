@@ -139,11 +139,8 @@ int drm_open(struct inode *inode, struct file *filp)
 	retcode = drm_open_helper(inode, filp, dev);
 	if (!retcode) {
 		atomic_inc(&dev->counts[_DRM_STAT_OPENS]);
-		if (!dev->open_count++) {
+		if (!dev->open_count++)
 			retcode = drm_setup(dev);
-			if (retcode)
-				dev->open_count--;
-		}
 	}
 	if (!retcode) {
 		mutex_lock(&dev->struct_mutex);
@@ -176,8 +173,7 @@ int drm_stub_open(struct inode *inode, struct file *filp)
 	int minor_id = iminor(inode);
 	int err = -ENODEV;
 	const struct file_operations *old_fops;
-
-	DRM_DEBUG("\n");
+	struct drm_file *file_priv = NULL;
 
 	mutex_lock(&drm_global_mutex);
 	minor = idr_find(&drm_minors_idr, minor_id);
@@ -204,6 +200,15 @@ int drm_stub_open(struct inode *inode, struct file *filp)
 
 out:
 	mutex_unlock(&drm_global_mutex);
+
+	file_priv = filp->private_data;
+	if (dev)
+		DRM_DEBUG("%s:[%d %d %d]ret[%d]\n", __func__,
+			dev->open_count,
+			file_priv ? file_priv->is_master : -1,
+			file_priv ? file_priv->authenticated : -1,
+			err);
+
 	return err;
 }
 
@@ -485,7 +490,11 @@ int drm_release(struct inode *inode, struct file *filp)
 
 	mutex_lock(&drm_global_mutex);
 
-	DRM_DEBUG("open_count = %d\n", dev->open_count);
+	DRM_DEBUG("%s:[%d %d %d]\n", __func__, dev->open_count,
+		file_priv->is_master, file_priv->authenticated);
+
+	if (file_priv->is_master)
+		DRM_INFO("%s:master\n", __func__);
 
 	if (dev->driver->preclose)
 		dev->driver->preclose(dev, file_priv);

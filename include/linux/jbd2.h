@@ -470,6 +470,7 @@ struct transaction_s
 		T_COMMIT,
 		T_COMMIT_DFLUSH,
 		T_COMMIT_JFLUSH,
+		T_COMMIT_CALLBACK,
 		T_FINISHED
 	}			t_state;
 
@@ -596,6 +597,16 @@ struct transaction_s
 	 * waiting for it to finish.
 	 */
 	unsigned int t_synchronous_commit:1;
+
+	/*
+	 * This transaction's callback is invoked [j_list_lock]
+	 */
+	unsigned int t_callbacked:1;
+
+	/*
+	 * This transaction is dropped [j_list_lock]
+	 */
+	unsigned int t_dropped:1;
 
 	/* Disk flush needs to be sent to fs partition [no locking] */
 	int			t_need_data_flush;
@@ -1177,6 +1188,7 @@ int __jbd2_log_start_commit(journal_t *journal, tid_t tid);
 int jbd2_journal_start_commit(journal_t *journal, tid_t *tid);
 int jbd2_journal_force_commit_nested(journal_t *journal);
 int jbd2_log_wait_commit(journal_t *journal, tid_t tid);
+int jbd2_complete_transaction(journal_t *journal, tid_t tid);
 int jbd2_log_do_checkpoint(journal_t *journal);
 int jbd2_trans_will_send_data_barrier(journal_t *journal, tid_t tid);
 

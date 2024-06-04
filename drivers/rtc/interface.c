@@ -16,6 +16,7 @@
 #include <linux/module.h>
 #include <linux/log2.h>
 #include <linux/workqueue.h>
+#include <linux/time_history.h>
 
 static int rtc_timer_enqueue(struct rtc_device *rtc, struct rtc_timer *timer);
 static void rtc_timer_remove(struct rtc_device *rtc, struct rtc_timer *timer);
@@ -71,6 +72,7 @@ int rtc_set_time(struct rtc_device *rtc, struct rtc_time *tm)
 			err = rtc->ops->set_mmss(rtc->dev.parent, secs);
 	} else
 		err = -EINVAL;
+	time_history_rtc_time_set(tm, err);
 
 	mutex_unlock(&rtc->ops_lock);
 	/* A timer might have just expired */
@@ -353,6 +355,7 @@ static int __rtc_set_alarm(struct rtc_device *rtc, struct rtc_wkalrm *alarm)
 	else
 		err = rtc->ops->set_alarm(rtc->dev.parent, alarm);
 
+	time_history_rtc_alarm_set(rtc, alarm, err);
 	return err;
 }
 
@@ -895,6 +898,7 @@ void rtc_timer_init(struct rtc_timer *timer, void (*f)(void* p), void* data)
 	timer->enabled = 0;
 	timer->task.func = f;
 	timer->task.private_data = data;
+	time_history_rtc_alarm_init(timer);
 }
 
 /* rtc_timer_start - Sets an rtc_timer to fire in the future

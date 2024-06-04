@@ -19,6 +19,7 @@
 #include <linux/workqueue.h>
 
 #include "rtc-core.h"
+#include <linux/time_history.h>
 
 
 static DEFINE_IDA(rtc_ida);
@@ -37,12 +38,13 @@ static void rtc_device_release(struct device *dev)
  * On suspend(), measure the delta between one RTC and the
  * system's wall clock; restore it on resume().
  */
-
+#ifndef CONFIG_SSP_RTC
 static struct timespec old_rtc, old_system, old_delta;
-
+#endif
 
 static int rtc_suspend(struct device *dev, pm_message_t mesg)
 {
+#ifndef CONFIG_SSP_RTC
 	struct rtc_device	*rtc = to_rtc_device(dev);
 	struct rtc_time		tm;
 	struct timespec		delta, delta_delta;
@@ -51,9 +53,10 @@ static int rtc_suspend(struct device *dev, pm_message_t mesg)
 
 	/* snapshot the current RTC and system time at suspend*/
 	rtc_read_time(rtc, &tm);
-	getnstimeofday(&old_system);
+	old_system=current_kernel_time();
 	rtc_tm_to_time(&tm, &old_rtc.tv_sec);
 
+	time_history_marker_system_rtc(&old_system, &tm);
 
 	/*
 	 * To avoid drift caused by repeated suspend/resumes,
@@ -73,12 +76,14 @@ static int rtc_suspend(struct device *dev, pm_message_t mesg)
 		/* Otherwise try to adjust old_system to compensate */
 		old_system = timespec_sub(old_system, delta_delta);
 	}
+#endif
 
 	return 0;
 }
 
 static int rtc_resume(struct device *dev)
 {
+#ifndef CONFIG_SSP_RTC
 	struct rtc_device	*rtc = to_rtc_device(dev);
 	struct rtc_time		tm;
 	struct timespec		new_system, new_rtc;
@@ -98,8 +103,9 @@ static int rtc_resume(struct device *dev)
 	new_rtc.tv_nsec = 0;
 
 	if (new_rtc.tv_sec < old_rtc.tv_sec) {
-		pr_debug("%s:  time travel!\n", dev_name(&rtc->dev));
-		return 0;
+		pr_warn("%s:  time travel!\n", dev_name(&rtc->dev));
+		time_history_rtc_time_set(&tm, -EINVAL);
+		goto timeh_marker;
 	}
 
 	/* calculate the RTC time delta (sleep time)*/
@@ -117,6 +123,13 @@ static int rtc_resume(struct device *dev)
 
 	if (sleep_time.tv_sec >= 0)
 		timekeeping_inject_sleeptime(&sleep_time);
+
+	new_system = current_kernel_time();
+
+timeh_marker:
+	time_history_marker_system_rtc(&new_system, &tm);
+#endif
+
 	return 0;
 }
 

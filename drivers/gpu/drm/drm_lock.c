@@ -66,9 +66,10 @@ int drm_lock(struct drm_device *dev, void *data, struct drm_file *file_priv)
 		return -EINVAL;
 	}
 
-	DRM_DEBUG("%d (pid %d) requests lock (0x%08x), flags = 0x%08x\n",
-		  lock->context, task_pid_nr(current),
-		  master->lock.hw_lock->lock, lock->flags);
+	 if (master)
+		DRM_DEBUG("%d (pid %d) requests lock (0x%08x), flags = 0x%08x\n",
+			  lock->context, task_pid_nr(current),
+			  master->lock.hw_lock->lock, lock->flags);
 
 	if (drm_core_check_feature(dev, DRIVER_DMA_QUEUE))
 		if (lock->context < 0)

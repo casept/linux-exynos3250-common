@@ -12,9 +12,15 @@
 #include "drmP.h"
 
 #include "exynos_drm.h"
-#include "exynos_drm_crtc.h"
 #include "exynos_drm_drv.h"
 #include "exynos_drm_encoder.h"
+#include "exynos_drm_crtc.h"
+#include "exynos_drm_fb.h"
+#include "exynos_drm_gem.h"
+
+#include <linux/dmabuf-sync.h>
+
+#define to_exynos_plane(x)	container_of(x, struct exynos_plane, base)
 
 struct exynos_plane {
 	struct drm_plane		base;
@@ -30,6 +36,190 @@ static const uint32_t formats[] = {
 	DRM_FORMAT_NV12MT,
 };
 
+/*
+ * This function is to get X or Y size shown via screen. This needs length and
+ * start position of CRTC.
+ *
+ *      <--- length --->
+ * CRTC ----------------
+ *      ^ start        ^ end
+ *
+ * There are six cases from a to f.
+ *
+ *             <----- SCREEN ----->
+ *             0                 last
+ *   ----------|------------------|----------
+ * CRTCs
+ * a -------
+ *        b -------
+ *        c --------------------------
+ *                 d --------
+ *                           e -------
+ *                                  f -------
+ */
+static int exynos_plane_get_size(int start, unsigned length, unsigned last)
+{
+	int end = start + length;
+	int size = 0;
+
+	if (start <= 0) {
+		if (end > 0)
+			size = min_t(unsigned, end, last);
+	} else if (start <= last) {
+		size = min_t(unsigned, last - start, length);
+	}
+
+	return size;
+}
+
+int exynos_plane_mode_set(struct drm_plane *plane, struct drm_crtc *crtc,
+			  struct drm_framebuffer *fb,
+			  struct exynos_drm_pos crtc_pos,
+			  struct exynos_drm_pos src_pos, bool sync)
+{
+	struct exynos_plane *exynos_plane = to_exynos_plane(plane);
+	struct exynos_drm_overlay *overlay = &exynos_plane->overlay;
+	unsigned int actual_w;
+	unsigned int actual_h;
+	int nr;
+	int i;
+
+	DRM_DEBUG_KMS("[%d] %s\n", __LINE__, __func__);
+
+	nr = exynos_drm_fb_get_buf_cnt(fb);
+	for (i = 0; i < nr; i++) {
+		struct exynos_drm_gem_buf *buffer = exynos_drm_fb_buffer(fb, i);
+
+		if (!buffer) {
+			DRM_LOG_KMS("buffer is null\n");
+			return -EFAULT;
+		}
+
+		overlay->dma_addr[i] = buffer->dma_addr;
+
+		DRM_DEBUG_KMS("buffer: %d, dma_addr = 0x%lx\n",
+				i, (unsigned long)overlay->dma_addr[i]);
+	}
+
+	actual_w = exynos_plane_get_size(crtc_pos.x, crtc_pos.w, crtc->mode.hdisplay);
+	actual_h = exynos_plane_get_size(crtc_pos.y, crtc_pos.h, crtc->mode.vdisplay);
+
+	if (crtc_pos.x < 0) {
+		if (actual_w)
+			src_pos.x -= crtc_pos.x;
+		crtc_pos.x = 0;
+	}
+
+	if (crtc_pos.y < 0) {
+		if (actual_h)
+			src_pos.y -= crtc_pos.y;
+		crtc_pos.y = 0;
+	}
+
+	/* set drm framebuffer data. */
+	overlay->fb_x = src_pos.x;
+	overlay->fb_y = src_pos.y;
+	overlay->fb_width = fb->width;
+	overlay->fb_height = fb->height;
+	overlay->src_width = src_pos.w;
+	overlay->src_height = src_pos.h;
+	overlay->bpp = fb->bits_per_pixel;
+	overlay->pitch = fb->pitches[0];
+	overlay->pixel_format = fb->pixel_format;
+
+	/* set overlay range to be displayed. */
+	overlay->crtc_x = crtc_pos.x;
+	overlay->crtc_y = crtc_pos.y;
+	overlay->crtc_width = actual_w;
+	overlay->crtc_height = actual_h;
+
+	/* set drm mode data. */
+	overlay->mode_width = crtc->mode.hdisplay;
+	overlay->mode_height = crtc->mode.vdisplay;
+	overlay->refresh = crtc->mode.vrefresh;
+	overlay->scan_flag = crtc->mode.flags;
+	overlay->sync = sync;
+
+	DRM_DEBUG_KMS("overlay : offset_x/y(%d,%d), width/height(%d,%d)",
+			overlay->crtc_x, overlay->crtc_y,
+			overlay->crtc_width, overlay->crtc_height);
+
+	exynos_drm_fn_encoder(crtc, overlay,
+				exynos_drm_encoder_plane_mode_set);
+
+	return 0;
+}
+
+void exynos_plane_commit(struct drm_plane *plane)
+{
+	struct exynos_plane *exynos_plane = to_exynos_plane(plane);
+	struct exynos_drm_overlay *overlay = &exynos_plane->overlay;
+
+	exynos_drm_fn_encoder(plane->crtc, &overlay->zpos,
+			exynos_drm_encoder_plane_commit);
+}
+
+void exynos_plane_request_partial_update(struct drm_plane *plane)
+{
+	exynos_drm_fn_encoder(plane->crtc, NULL,
+			exynos_drm_encoder_plane_request_partial_update);
+}
+
+void exynos_plane_adjust_partial_region(struct drm_plane *plane,
+			struct exynos_drm_pos *pos)
+{
+	exynos_drm_fn_encoder(plane->crtc, pos,
+			exynos_drm_encoder_plane_adjust_partial_region);
+}
+
+void exynos_plane_partial_resolution(struct drm_plane *plane,
+			struct exynos_drm_pos *pos)
+{
+	exynos_drm_fn_encoder(plane->crtc, pos,
+			exynos_drm_encoder_plane_partial_resolution);
+}
+
+void exynos_plane_dpms(struct drm_plane *plane, int mode)
+{
+	struct exynos_plane *exynos_plane = to_exynos_plane(plane);
+	struct exynos_drm_overlay *overlay = &exynos_plane->overlay;
+
+	DRM_DEBUG_KMS("[%d] %s\n", __LINE__, __func__);
+
+	if (mode == DRM_MODE_DPMS_ON) {
+		if (exynos_plane->enabled)
+			return;
+
+		exynos_drm_fn_encoder(plane->crtc, &overlay->zpos,
+				exynos_drm_encoder_plane_enable);
+
+		exynos_plane->enabled = true;
+	} else {
+		if (!exynos_plane->enabled)
+			return;
+
+		exynos_drm_fn_encoder(plane->crtc, &overlay->zpos,
+				exynos_drm_encoder_plane_disable);
+
+		exynos_plane->enabled = false;
+	}
+}
+
+unsigned int get_planes_cnt_enabled(struct drm_device *drm_dev)
+{
+	struct drm_plane *plane;
+	unsigned int cnt = 0;
+
+	list_for_each_entry(plane, &drm_dev->mode_config.plane_list, head) {
+		struct exynos_plane *exynos_plane = to_exynos_plane(plane);
+
+		if (exynos_plane->enabled)
+			cnt++;
+	}
+
+	return cnt;
+}
+
 static int
 exynos_update_plane(struct drm_plane *plane, struct drm_crtc *crtc,
 		     struct drm_framebuffer *fb, int crtc_x, int crtc_y,
@@ -37,64 +227,116 @@ exynos_update_plane(struct drm_plane *plane, struct drm_crtc *crtc,
 		     uint32_t src_x, uint32_t src_y,
 		     uint32_t src_w, uint32_t src_h)
 {
-	struct exynos_plane *exynos_plane =
-		container_of(plane, struct exynos_plane, base);
-	struct exynos_drm_overlay *overlay = &exynos_plane->overlay;
-	struct exynos_drm_crtc_pos pos;
-	unsigned int x = src_x >> 16;
-	unsigned int y = src_y >> 16;
-	int ret;
+	struct dmabuf_sync *sync;
+	struct exynos_drm_pos crtc_pos;
+	struct exynos_drm_pos src_pos;
+	int ret, dpms;
+	bool sync_mode = false;
 
-	DRM_DEBUG_KMS("[%d] %s\n", __LINE__, __func__);
+	if (!crtc) {
+		DRM_ERROR("failed to get crtc\n");
+		return -EINVAL;
+	}
 
-	memset(&pos, 0, sizeof(struct exynos_drm_crtc_pos));
-	pos.crtc_x = crtc_x;
-	pos.crtc_y = crtc_y;
-	pos.crtc_w = crtc_w;
-	pos.crtc_h = crtc_h;
+	dpms = exynos_drm_crtc_get_dpms(crtc);
+	DRM_DEBUG_KMS("%s:dpms[%d]\n",  __func__, dpms);
 
-	pos.fb_x = x;
-	pos.fb_y = y;
+	if (dpms != DRM_MODE_DPMS_ON) {
+		if (dpms == DRM_MODE_DPMS_SUSPEND) {
+			DRM_INFO("%s\n", "update_plane");
+			sync_mode = true;
+			exynos_drm_crtc_dpms(crtc, DRM_MODE_DPMS_STANDBY);
+		} else {
+			DRM_ERROR("crtc[%d]invalid dpms[%d]\n",
+				crtc->base.id, dpms);
+			return -EPERM;
+		}
+	}
 
-	/* TODO: scale feature */
-	ret = exynos_drm_overlay_update(overlay, fb, &crtc->mode, &pos);
+	/*
+	 * Wait for the completion of a partial update request
+	 * if the partial update request in progress exists yet.
+	 */
+	if (check_fb_partial_update(fb)) {
+retry:
+		exynos_drm_encoder_complete_scanout(fb);
+
+		if (check_fb_partial_update(fb))
+			goto retry;
+	}
+
+	/* Change it to full screen mode if necessary. */
+	change_to_full_screen_mode(crtc, fb);
+
+	crtc_pos.x = crtc_x;
+	crtc_pos.y = crtc_y;
+	crtc_pos.w = crtc_w;
+	crtc_pos.h = crtc_h;
+	src_pos.x = src_x >> 16;
+	src_pos.y = src_y >> 16;
+	src_pos.w = src_w >> 16;
+	src_pos.h = src_h >> 16;
+
+	ret = exynos_plane_mode_set(plane, crtc, fb, crtc_pos, src_pos, sync_mode);
 	if (ret < 0)
-		return ret;
+		goto out;
 
-	exynos_drm_fn_encoder(crtc, overlay,
-			exynos_drm_encoder_crtc_mode_set);
-	exynos_drm_fn_encoder(crtc, &overlay->zpos,
-			exynos_drm_encoder_crtc_plane_commit);
+	plane->crtc = crtc;
+	plane->fb = crtc->fb;
 
-	exynos_plane->enabled = true;
+	exynos_plane_commit(plane);
+	exynos_plane_dpms(plane, DRM_MODE_DPMS_ON);
 
-	return 0;
+	if (!dmabuf_sync_is_supported())
+		goto out;
+
+	sync = (struct dmabuf_sync *)exynos_drm_dmabuf_sync_work(fb);
+	if (IS_ERR(sync)) {
+		WARN_ON(1);
+		/* just ignore buffer synchronization this time. */
+		goto out;
+	}
+
+out:
+	if (sync_mode) {
+		dpms = exynos_drm_crtc_get_dpms(crtc);
+
+		if (dpms == DRM_MODE_DPMS_STANDBY) {
+			exynos_drm_crtc_dpms(crtc, DRM_MODE_DPMS_SUSPEND);
+			DRM_INFO("%s:ret[%d]\n", "update_plane", ret);
+		} else {
+			DRM_ERROR("crtc[%d]invalid dpms[%d]\n",
+			crtc->base.id, dpms);
+			ret = -EINVAL;
+		}
+	}
+
+	return ret;
 }
 
 static int exynos_disable_plane(struct drm_plane *plane)
 {
-	struct exynos_plane *exynos_plane =
-		container_of(plane, struct exynos_plane, base);
-	struct exynos_drm_overlay *overlay = &exynos_plane->overlay;
+	struct drm_crtc *crtc = plane->crtc;
+	int dpms;
 
-	DRM_DEBUG_KMS("[%d] %s\n", __LINE__, __func__);
+	if (!crtc) {
+		DRM_ERROR("failed to get crtc\n");
+		return -EINVAL;
+	}
 
-	if (!exynos_plane->enabled)
-		return 0;
+	dpms = exynos_drm_crtc_get_dpms(crtc);
 
-	exynos_drm_fn_encoder(plane->crtc, &overlay->zpos,
-			exynos_drm_encoder_crtc_disable);
+	if (dpms != DRM_MODE_DPMS_ON)
+		DRM_INFO("%s:dpms[%d]\n", __func__, dpms);
 
-	exynos_plane->enabled = false;
-	exynos_plane->overlay.zpos = DEFAULT_ZPOS;
+	exynos_plane_dpms(plane, DRM_MODE_DPMS_OFF);
 
 	return 0;
 }
 
 static void exynos_plane_destroy(struct drm_plane *plane)
 {
-	struct exynos_plane *exynos_plane =
-		container_of(plane, struct exynos_plane, base);
+	struct exynos_plane *exynos_plane = to_exynos_plane(plane);
 
 	DRM_DEBUG_KMS("[%d] %s\n", __LINE__, __func__);
 
@@ -103,69 +345,81 @@ static void exynos_plane_destroy(struct drm_plane *plane)
 	kfree(exynos_plane);
 }
 
+static int exynos_plane_set_property(struct drm_plane *plane,
+				     struct drm_property *property,
+				     uint64_t val)
+{
+	struct drm_device *dev = plane->dev;
+	struct exynos_plane *exynos_plane = to_exynos_plane(plane);
+	struct exynos_drm_private *dev_priv = dev->dev_private;
+
+	DRM_DEBUG_KMS("[%d] %s\n", __LINE__, __func__);
+
+	if (dev_priv->plane_zpos_property == property) {
+		exynos_plane->overlay.zpos = val;
+		return 0;
+	}
+
+	return -EINVAL;
+}
+
 static struct drm_plane_funcs exynos_plane_funcs = {
 	.update_plane	= exynos_update_plane,
 	.disable_plane	= exynos_disable_plane,
 	.destroy	= exynos_plane_destroy,
+	.set_property	= exynos_plane_set_property,
 };
 
-int exynos_plane_init(struct drm_device *dev, unsigned int nr)
+static void exynos_plane_attach_property(struct drm_plane *plane)
 {
-	struct exynos_plane *exynos_plane;
-	uint32_t possible_crtcs;
-
-	exynos_plane = kzalloc(sizeof(struct exynos_plane), GFP_KERNEL);
-	if (!exynos_plane)
-		return -ENOMEM;
-
-	/* all CRTCs are available */
-	possible_crtcs = (1 << MAX_CRTC) - 1;
-
-	exynos_plane->overlay.zpos = DEFAULT_ZPOS;
-
-	return drm_plane_init(dev, &exynos_plane->base, possible_crtcs,
-			      &exynos_plane_funcs, formats, ARRAY_SIZE(formats),
-			      false);
-}
-
-int exynos_plane_set_zpos_ioctl(struct drm_device *dev, void *data,
-				struct drm_file *file_priv)
-{
-	struct drm_exynos_plane_set_zpos *zpos_req = data;
-	struct drm_mode_object *obj;
-	struct drm_plane *plane;
-	struct exynos_plane *exynos_plane;
-	int ret = 0;
+	struct drm_device *dev = plane->dev;
+	struct exynos_drm_private *dev_priv = dev->dev_private;
+	struct drm_property *prop;
 
 	DRM_DEBUG_KMS("[%d] %s\n", __LINE__, __func__);
 
-	if (!drm_core_check_feature(dev, DRIVER_MODESET))
-		return -EINVAL;
-
-	if (zpos_req->zpos < 0 || zpos_req->zpos >= MAX_PLANE) {
-		if (zpos_req->zpos != DEFAULT_ZPOS) {
-			DRM_ERROR("zpos not within limits\n");
-			return -EINVAL;
+	prop = dev_priv->plane_zpos_property;
+	if (!prop) {
+		prop = drm_property_create_range(dev, 0, "zpos", 0,
+						 MAX_PLANE - 1);
+		if (!prop) {
+			DRM_ERROR("failed to create zpos property.\n");
+			return;
 		}
+
+		dev_priv->plane_zpos_property = prop;
 	}
 
-	mutex_lock(&dev->mode_config.mutex);
+	drm_object_attach_property(&plane->base, prop, 0);
+}
 
-	obj = drm_mode_object_find(dev, zpos_req->plane_id,
-			DRM_MODE_OBJECT_PLANE);
-	if (!obj) {
-		DRM_DEBUG_KMS("Unknown plane ID %d\n",
-			      zpos_req->plane_id);
-		ret = -EINVAL;
-		goto out;
+struct drm_plane *exynos_plane_init(struct drm_device *dev,
+				    unsigned int possible_crtcs, bool priv)
+{
+	struct exynos_plane *exynos_plane;
+	int err;
+
+	DRM_DEBUG_KMS("[%d] %s\n", __LINE__, __func__);
+
+	exynos_plane = kzalloc(sizeof(struct exynos_plane), GFP_KERNEL);
+	if (!exynos_plane) {
+		DRM_ERROR("failed to allocate plane\n");
+		return NULL;
 	}
 
-	plane = obj_to_plane(obj);
-	exynos_plane = container_of(plane, struct exynos_plane, base);
+	err = drm_plane_init(dev, &exynos_plane->base, possible_crtcs,
+			      &exynos_plane_funcs, formats, ARRAY_SIZE(formats),
+			      priv);
+	if (err) {
+		DRM_ERROR("failed to initialize plane\n");
+		kfree(exynos_plane);
+		return NULL;
+	}
 
-	exynos_plane->overlay.zpos = zpos_req->zpos;
+	if (priv)
+		exynos_plane->overlay.zpos = DEFAULT_ZPOS;
+	else
+		exynos_plane_attach_property(&exynos_plane->base);
 
-out:
-	mutex_unlock(&dev->mode_config.mutex);
-	return ret;
+	return &exynos_plane->base;
 }

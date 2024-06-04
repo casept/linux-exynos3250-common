@@ -485,6 +485,15 @@ enum rpm_request {
 	RPM_REQ_RESUME,
 };
 
+#ifdef CONFIG_DISPLAY_EARLY_DPMS
+enum early_comp_level {
+	EARLY_COMP_NONE,
+	EARLY_COMP_SLAVE,
+	EARLY_COMP_MASTER,
+	EARLY_COMP_MAX,
+};
+#endif
+
 struct wakeup_source;
 
 struct pm_domain_data {
@@ -509,6 +518,7 @@ struct dev_pm_info {
 	unsigned int		async_suspend:1;
 	bool			is_prepared:1;	/* Owned by the PM core */
 	bool			is_suspended:1;	/* Ditto */
+	bool			is_completed:1;
 	bool			ignore_children:1;
 	spinlock_t		lock;
 #ifdef CONFIG_PM_SLEEP
@@ -544,9 +554,11 @@ struct dev_pm_info {
 	unsigned long		active_jiffies;
 	unsigned long		suspended_jiffies;
 	unsigned long		accounting_timestamp;
-	ktime_t			suspend_time;
-	s64			max_time_suspended_ns;
 	struct dev_pm_qos_request *pq_req;
+#endif
+#ifdef CONFIG_DISPLAY_EARLY_DPMS
+	enum early_comp_level	early_comp_level;
+	struct list_head	early_comp_entry;
 #endif
 	struct pm_subsys_data	*subsys_data;  /* Owned by the subsystem. */
 	struct pm_qos_constraints *constraints;

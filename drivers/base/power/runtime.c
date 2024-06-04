@@ -12,7 +12,9 @@
 #include <linux/pm_runtime.h>
 #include <trace/events/rpm.h>
 #include "power.h"
-
+#if defined(CONFIG_SYSTEM_LOAD_ANALYZER)
+#include <linux/load_analyzer.h>
+#endif
 static int rpm_resume(struct device *dev, int rpmflags);
 static int rpm_suspend(struct device *dev, int rpmflags);
 
@@ -282,47 +284,6 @@ static int rpm_callback(int (*cb)(struct device *), struct device *dev)
 	return retval != -EACCES ? retval : -EIO;
 }
 
-struct rpm_qos_data {
-	ktime_t time_now;
-	s64 constraint_ns;
-};
-
-/**
- * rpm_update_qos_constraint - Update a given PM QoS constraint data.
- * @dev: Device whose timing data to use.
- * @data: PM QoS constraint data to update.
- *
- * Use the suspend timing data of @dev to update PM QoS constraint data pointed
- * to by @data.
- */
-static int rpm_update_qos_constraint(struct device *dev, void *data)
-{
-	struct rpm_qos_data *qos = data;
-	unsigned long flags;
-	s64 delta_ns;
-	int ret = 0;
-
-	spin_lock_irqsave(&dev->power.lock, flags);
-
-	if (dev->power.max_time_suspended_ns < 0)
-		goto out;
-
-	delta_ns = dev->power.max_time_suspended_ns -
-		ktime_to_ns(ktime_sub(qos->time_now, dev->power.suspend_time));
-	if (delta_ns <= 0) {
-		ret = -EBUSY;
-		goto out;
-	}
-
-	if (qos->constraint_ns > delta_ns || qos->constraint_ns == 0)
-		qos->constraint_ns = delta_ns;
-
- out:
-	spin_unlock_irqrestore(&dev->power.lock, flags);
-
-	return ret;
-}
-
 /**
  * rpm_suspend - Carry out runtime suspend of given device.
  * @dev: Device to suspend.
@@ -349,7 +310,6 @@ static int rpm_suspend(struct device *dev, int rpmflags)
 {
 	int (*callback)(struct device *);
 	struct device *parent = NULL;
-	struct rpm_qos_data qos;
 	int retval;
 
 	trace_rpm_suspend(dev, rpmflags);
@@ -444,37 +404,13 @@ static int rpm_suspend(struct device *dev, int rpmflags)
 		goto out;
 	}
 
-	qos.constraint_ns = __dev_pm_qos_read_value(dev);
-	if (qos.constraint_ns < 0) {
-		/* Negative constraint means "never suspend". */
+	if (__dev_pm_qos_read_value(dev) < 0) {
+		/* Negative PM QoS constraint means "never suspend". */
 		retval = -EPERM;
 		goto out;
 	}
-	qos.constraint_ns *= NSEC_PER_USEC;
-	qos.time_now = ktime_get();
 
 	__update_runtime_status(dev, RPM_SUSPENDING);
-
-	if (!dev->power.ignore_children) {
-		if (dev->power.irq_safe)
-			spin_unlock(&dev->power.lock);
-		else
-			spin_unlock_irq(&dev->power.lock);
-
-		retval = device_for_each_child(dev, &qos,
-					       rpm_update_qos_constraint);
-
-		if (dev->power.irq_safe)
-			spin_lock(&dev->power.lock);
-		else
-			spin_lock_irq(&dev->power.lock);
-
-		if (retval)
-			goto fail;
-	}
-
-	dev->power.suspend_time = qos.time_now;
-	dev->power.max_time_suspended_ns = qos.constraint_ns ? : -1;
 
 	if (dev->pm_domain)
 		callback = dev->pm_domain->ops.runtime_suspend;
@@ -529,8 +465,6 @@ static int rpm_suspend(struct device *dev, int rpmflags)
 
  fail:
 	__update_runtime_status(dev, RPM_ACTIVE);
-	dev->power.suspend_time = ktime_set(0, 0);
-	dev->power.max_time_suspended_ns = -1;
 	dev->power.deferred_resume = false;
 	wake_up_all(&dev->power.wait_queue);
 
@@ -705,9 +639,6 @@ static int rpm_resume(struct device *dev, int rpmflags)
 	if (dev->power.no_callbacks)
 		goto no_callback;	/* Assume success. */
 
-	dev->power.suspend_time = ktime_set(0, 0);
-	dev->power.max_time_suspended_ns = -1;
-
 	__update_runtime_status(dev, RPM_RESUMING);
 
 	if (dev->pm_domain)
@@ -763,16 +694,37 @@ static int rpm_resume(struct device *dev, int rpmflags)
 static void pm_runtime_work(struct work_struct *work)
 {
 	struct device *dev = container_of(work, struct device, power.work);
-	enum rpm_request req;
+	enum rpm_request req = -1;
 
+#if defined(CONFIG_SLP_MINI_TRACER)
+{
+	char str[64] = {0,};
+	sprintf(str, "[1] dev=%p\n", dev);
+	kernel_mini_tracer(str, TIME_ON | FLUSH_CACHE);
+}
+#endif
 	spin_lock_irq(&dev->power.lock);
-
+#if defined(CONFIG_SLP_MINI_TRACER)
+{
+	char str[64] = {0,};
+	sprintf(str, "[2] dev=%p\n", dev);
+	kernel_mini_tracer(str, TIME_ON | FLUSH_CACHE);
+}
+#endif
 	if (!dev->power.request_pending)
 		goto out;
 
 	req = dev->power.request;
 	dev->power.request = RPM_REQ_NONE;
 	dev->power.request_pending = false;
+
+#if defined(CONFIG_SLP_MINI_TRACER)
+{
+	char str[64] = {0,};
+	sprintf(str, "[3] dev=%p req=%d\n", dev, req);
+	kernel_mini_tracer(str, TIME_ON | FLUSH_CACHE);
+}
+#endif
 
 	switch (req) {
 	case RPM_REQ_NONE:
@@ -793,6 +745,13 @@ static void pm_runtime_work(struct work_struct *work)
 
  out:
 	spin_unlock_irq(&dev->power.lock);
+#if defined(CONFIG_SLP_MINI_TRACER)
+{
+	char str[64] = {0,};
+	sprintf(str, "[4] dev=%p req=%d\n", dev, req);
+	kernel_mini_tracer(str, TIME_ON | FLUSH_CACHE);
+}
+#endif
 }
 
 /**
@@ -1370,9 +1329,6 @@ void pm_runtime_init(struct device *dev)
 	setup_timer(&dev->power.suspend_timer, pm_suspend_timer_fn,
 			(unsigned long)dev);
 
-	dev->power.suspend_time = ktime_set(0, 0);
-	dev->power.max_time_suspended_ns = -1;
-
 	init_waitqueue_head(&dev->power.wait_queue);
 }
 
@@ -1389,29 +1345,4 @@ void pm_runtime_remove(struct device *dev)
 		pm_runtime_set_suspended(dev);
 	if (dev->power.irq_safe && dev->parent)
 		pm_runtime_put_sync(dev->parent);
-}
-
-/**
- * pm_runtime_update_max_time_suspended - Update device's suspend time data.
- * @dev: Device to handle.
- * @delta_ns: Value to subtract from the device's max_time_suspended_ns field.
- *
- * Update the device's power.max_time_suspended_ns field by subtracting
- * @delta_ns from it.  The resulting value of power.max_time_suspended_ns is
- * never negative.
- */
-void pm_runtime_update_max_time_suspended(struct device *dev, s64 delta_ns)
-{
-	unsigned long flags;
-
-	spin_lock_irqsave(&dev->power.lock, flags);
-
-	if (delta_ns > 0 && dev->power.max_time_suspended_ns > 0) {
-		if (dev->power.max_time_suspended_ns > delta_ns)
-			dev->power.max_time_suspended_ns -= delta_ns;
-		else
-			dev->power.max_time_suspended_ns = 0;
-	}
-
-	spin_unlock_irqrestore(&dev->power.lock, flags);
 }

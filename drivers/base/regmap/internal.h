@@ -15,9 +15,18 @@
 
 #include <linux/regmap.h>
 #include <linux/fs.h>
+#include <linux/list.h>
 
 struct regmap;
 struct regcache_ops;
+
+struct regmap_debugfs_off_cache {
+	struct list_head list;
+	off_t min;
+	off_t max;
+	unsigned int base_reg;
+	unsigned int max_reg;
+};
 
 struct regmap_format {
 	size_t buf_size;
@@ -41,6 +50,14 @@ struct regmap {
 
 #ifdef CONFIG_DEBUG_FS
 	struct dentry *debugfs;
+	const char *debugfs_name;
+
+	unsigned int debugfs_reg_len;
+	unsigned int debugfs_val_len;
+	unsigned int debugfs_tot_len;
+
+	struct list_head debugfs_off_cache;
+	struct mutex cache_lock;
 #endif
 
 	unsigned int max_register;
@@ -51,6 +68,10 @@ struct regmap {
 
 	u8 read_flag_mask;
 	u8 write_flag_mask;
+
+	/* number of bits to (left) shift the reg value when formatting*/
+	int reg_shift;
+	int reg_stride;
 
 	/* regcache specific members */
 	const struct regcache_ops *cache_ops;
@@ -101,7 +122,7 @@ int _regmap_write(struct regmap *map, unsigned int reg,
 
 #ifdef CONFIG_DEBUG_FS
 extern void regmap_debugfs_initcall(void);
-extern void regmap_debugfs_init(struct regmap *map);
+extern void regmap_debugfs_init(struct regmap *map, const char *name);
 extern void regmap_debugfs_exit(struct regmap *map);
 #else
 static inline void regmap_debugfs_initcall(void) { }

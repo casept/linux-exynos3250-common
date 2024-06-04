@@ -1,0 +1,13 @@
+#
+config MST_LDO
+	def_bool n
+	bool "Control MST LDO power source"
+
+config MST_NOBLE_TARGET
+	def_bool n
+	bool "mst solution for noble target"
+
+config MST_ZEN_TARGET
+	def_bool n
+	bool "mst solution for zen target"
+

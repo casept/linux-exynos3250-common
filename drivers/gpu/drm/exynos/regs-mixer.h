@@ -23,6 +23,7 @@
 #define MXR_INT_STATUS			0x000C
 #define MXR_LAYER_CFG			0x0010
 #define MXR_VIDEO_CFG			0x0014
+#define MXR_VIDEO_LIMITER_PARA_CFG	0x0018
 #define MXR_GRAPHIC0_CFG		0x0020
 #define MXR_GRAPHIC0_BASE		0x0024
 #define MXR_GRAPHIC0_SPAN		0x0028
@@ -74,6 +75,8 @@
 #define MXR_STATUS_BIG_ENDIAN		(1 << 3)
 #define MXR_STATUS_ENDIAN_MASK		(1 << 3)
 #define MXR_STATUS_SYNC_ENABLE		(1 << 2)
+#define MXR_STATUS_OPERATING		(0 << 1)
+#define MXR_STATUS_IDLE_MODE		(1 << 1)
 #define MXR_STATUS_REG_RUN		(1 << 0)
 
 /* bits for MXR_CFG */
@@ -136,6 +139,16 @@
 #define MXR_LAYER_CFG_GRP1_VAL(x)	MXR_MASK_VAL(x, 11, 8)
 #define MXR_LAYER_CFG_GRP0_VAL(x)	MXR_MASK_VAL(x, 7, 4)
 #define MXR_LAYER_CFG_VP_VAL(x)		MXR_MASK_VAL(x, 3, 0)
+
+/* bit for MXR_VIDEO_CFG */
+#define MXR_VIDEO_CFG_LIMITER_DIS	(0 << 17)
+#define MXR_VIDEO_CFG_LIMITER_EN	(1 << 17)
+
+/* bit for MIXER_VIDEO_LIMITER_PARA_CFG */
+#define MXR_VIDEO_LIMITER_PARA_Y_UPPER(x)   (((x) & 0xFF) << 24)
+#define MXR_VIDEO_LIMITER_PARA_Y_LOWER(x)   (((x) & 0xFF) << 16)
+#define MXR_VIDEO_LIMITER_PARA_C_UPPER(x)   (((x) & 0xFF) << 8)
+#define MXR_VIDEO_LIMITER_PARA_C_LOWER(x)   (((x) & 0xFF) << 0)
 
 #endif /* SAMSUNG_REGS_MIXER_H */
 
