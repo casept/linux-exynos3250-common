@@ -37,11 +37,35 @@ static void vunmap_pte_range(pmd_t *pmd, unsigned long addr, unsigned long end)
 {
 	pte_t *pte;
 
+#ifdef CONFIG_TIMA_RKP_LAZY_MMU
+	unsigned long do_lazy_mmu = 0;
+#endif
+
 	pte = pte_offset_kernel(pmd, addr);
+
+#ifdef CONFIG_TIMA_RKP_LAZY_MMU
+	if (tima_is_pg_protected((unsigned long)pte) == 1)
+		do_lazy_mmu = 1;
+	if (do_lazy_mmu) {
+		spin_lock(&init_mm.page_table_lock);
+		tima_send_cmd2((unsigned int)pmd, TIMA_LAZY_MMU_START, TIMA_LAZY_MMU_CMDID);
+		flush_tlb_l2_page(pmd);
+		spin_unlock(&init_mm.page_table_lock);
+	}
+#endif
 	do {
 		pte_t ptent = ptep_get_and_clear(&init_mm, addr, pte);
 		WARN_ON(!pte_none(ptent) && !pte_present(ptent));
 	} while (pte++, addr += PAGE_SIZE, addr != end);
+
+#ifdef CONFIG_TIMA_RKP_LAZY_MMU
+	if (do_lazy_mmu) {
+		spin_lock(&init_mm.page_table_lock);
+		tima_send_cmd2((unsigned int)pmd, TIMA_LAZY_MMU_STOP, TIMA_LAZY_MMU_CMDID);
+		flush_tlb_l2_page(pmd);
+		spin_unlock(&init_mm.page_table_lock);
+	}
+#endif
 }
 
 static void vunmap_pmd_range(pud_t *pud, unsigned long addr, unsigned long end)
@@ -91,6 +115,9 @@ static int vmap_pte_range(pmd_t *pmd, unsigned long addr,
 		unsigned long end, pgprot_t prot, struct page **pages, int *nr)
 {
 	pte_t *pte;
+#ifdef CONFIG_TIMA_RKP_LAZY_MMU
+	unsigned long do_lazy_mmu = 0;
+#endif
 
 	/*
 	 * nr is a running index into the array which helps higher level
@@ -100,6 +127,16 @@ static int vmap_pte_range(pmd_t *pmd, unsigned long addr,
 	pte = pte_alloc_kernel(pmd, addr);
 	if (!pte)
 		return -ENOMEM;
+#ifdef CONFIG_TIMA_RKP_LAZY_MMU
+	if (tima_is_pg_protected((unsigned long)pte) == 1)
+		do_lazy_mmu = 1;
+	if (do_lazy_mmu) {
+		spin_lock(&init_mm.page_table_lock);
+		tima_send_cmd2((unsigned int)pmd, TIMA_LAZY_MMU_START, TIMA_LAZY_MMU_CMDID);
+		flush_tlb_l2_page(pmd);
+		spin_unlock(&init_mm.page_table_lock);
+	}
+#endif
 	do {
 		struct page *page = pages[*nr];
 
@@ -110,6 +147,14 @@ static int vmap_pte_range(pmd_t *pmd, unsigned long addr,
 		set_pte_at(&init_mm, addr, pte, mk_pte(page, prot));
 		(*nr)++;
 	} while (pte++, addr += PAGE_SIZE, addr != end);
+#ifdef CONFIG_TIMA_RKP_LAZY_MMU
+	if (do_lazy_mmu) {
+		spin_lock(&init_mm.page_table_lock);
+		tima_send_cmd2((unsigned int)pmd, TIMA_LAZY_MMU_STOP, TIMA_LAZY_MMU_CMDID);
+		flush_tlb_l2_page(pmd);
+		spin_unlock(&init_mm.page_table_lock);
+	}
+#endif
 	return 0;
 }
 
@@ -1280,7 +1325,7 @@ DEFINE_RWLOCK(vmlist_lock);
 struct vm_struct *vmlist;
 
 static void setup_vmalloc_vm(struct vm_struct *vm, struct vmap_area *va,
-			      unsigned long flags, void *caller)
+			      unsigned long flags, const void *caller)
 {
 	vm->flags = flags;
 	vm->addr = (void *)va->va_start;
@@ -1306,7 +1351,7 @@ static void insert_vmalloc_vmlist(struct vm_struct *vm)
 }
 
 static void insert_vmalloc_vm(struct vm_struct *vm, struct vmap_area *va,
-			      unsigned long flags, void *caller)
+			      unsigned long flags, const void *caller)
 {
 	setup_vmalloc_vm(vm, va, flags, caller);
 	insert_vmalloc_vmlist(vm);
@@ -1314,7 +1359,7 @@ static void insert_vmalloc_vm(struct vm_struct *vm, struct vmap_area *va,
 
 static struct vm_struct *__get_vm_area_node(unsigned long size,
 		unsigned long align, unsigned long flags, unsigned long start,
-		unsigned long end, int node, gfp_t gfp_mask, void *caller)
+		unsigned long end, int node, gfp_t gfp_mask, const void *caller)
 {
 	struct vmap_area *va;
 	struct vm_struct *area;
@@ -1375,7 +1420,7 @@ EXPORT_SYMBOL_GPL(__get_vm_area);
 
 struct vm_struct *__get_vm_area_caller(unsigned long size, unsigned long flags,
 				       unsigned long start, unsigned long end,
-				       void *caller)
+				       const void *caller)
 {
 	return __get_vm_area_node(size, 1, flags, start, end, -1, GFP_KERNEL,
 				  caller);
@@ -1397,13 +1442,21 @@ struct vm_struct *get_vm_area(unsigned long size, unsigned long flags)
 }
 
 struct vm_struct *get_vm_area_caller(unsigned long size, unsigned long flags,
-				void *caller)
+				const void *caller)
 {
 	return __get_vm_area_node(size, 1, flags, VMALLOC_START, VMALLOC_END,
 						-1, GFP_KERNEL, caller);
 }
 
-static struct vm_struct *find_vm_area(const void *addr)
+/**
+ *	find_vm_area  -  find a continuous kernel virtual area
+ *	@addr:		base address
+ *
+ *	Search for the kernel VM area starting at @addr, and return it.
+ *	It is up to the caller to do all required locking to keep the returned
+ *	pointer valid.
+ */
+struct vm_struct *find_vm_area(const void *addr)
 {
 	struct vmap_area *va;
 
@@ -1568,9 +1621,9 @@ EXPORT_SYMBOL(vmap);
 
 static void *__vmalloc_node(unsigned long size, unsigned long align,
 			    gfp_t gfp_mask, pgprot_t prot,
-			    int node, void *caller);
+			    int node, const void *caller);
 static void *__vmalloc_area_node(struct vm_struct *area, gfp_t gfp_mask,
-				 pgprot_t prot, int node, void *caller)
+				 pgprot_t prot, int node, const void *caller)
 {
 	const int order = 0;
 	struct page **pages;
@@ -1643,7 +1696,7 @@ fail:
  */
 void *__vmalloc_node_range(unsigned long size, unsigned long align,
 			unsigned long start, unsigned long end, gfp_t gfp_mask,
-			pgprot_t prot, int node, void *caller)
+			pgprot_t prot, int node, const void *caller)
 {
 	struct vm_struct *area;
 	void *addr;
@@ -1699,7 +1752,7 @@ fail:
  */
 static void *__vmalloc_node(unsigned long size, unsigned long align,
 			    gfp_t gfp_mask, pgprot_t prot,
-			    int node, void *caller)
+			    int node, const void *caller)
 {
 	return __vmalloc_node_range(size, align, VMALLOC_START, VMALLOC_END,
 				gfp_mask, prot, node, caller);
@@ -2376,8 +2429,8 @@ struct vm_struct **pcpu_get_vm_areas(const unsigned long *offsets,
 		return NULL;
 	}
 
-	vms = kzalloc(sizeof(vms[0]) * nr_vms, GFP_KERNEL);
-	vas = kzalloc(sizeof(vas[0]) * nr_vms, GFP_KERNEL);
+	vms = kcalloc(nr_vms, sizeof(vms[0]), GFP_KERNEL);
+	vas = kcalloc(nr_vms, sizeof(vas[0]), GFP_KERNEL);
 	if (!vas || !vms)
 		goto err_free2;
 
@@ -2574,6 +2627,9 @@ static int s_show(struct seq_file *m, void *p)
 
 	if (v->flags & VM_IOREMAP)
 		seq_printf(m, " ioremap");
+
+	if (v->flags & VM_DMA)
+		seq_printf(m, " dma");
 
 	if (v->flags & VM_ALLOC)
 		seq_printf(m, " vmalloc");

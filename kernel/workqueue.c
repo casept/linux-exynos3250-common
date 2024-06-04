@@ -41,6 +41,10 @@
 #include <linux/debug_locks.h>
 #include <linux/lockdep.h>
 #include <linux/idr.h>
+#include <mach/sec_debug.h>
+#if defined(CONFIG_SYSTEM_LOAD_ANALYZER)
+#include <linux/load_analyzer.h>
+#endif
 
 #include "workqueue_sched.h"
 
@@ -1801,12 +1805,22 @@ __releases(&gcwq->lock)
 __acquires(&gcwq->lock)
 {
 	struct cpu_workqueue_struct *cwq = get_work_cwq(work);
-	struct global_cwq *gcwq = cwq->gcwq;
-	struct hlist_head *bwh = busy_worker_head(gcwq, work);
-	bool cpu_intensive = cwq->wq->flags & WQ_CPU_INTENSIVE;
-	work_func_t f = work->func;
+	struct global_cwq *gcwq;
+	struct hlist_head *bwh;
+	bool cpu_intensive;
+	work_func_t f;
 	int work_color;
 	struct worker *collision;
+
+	if (cwq == NULL){
+		pr_err("%s cwq=%p worker=%p work=%p", __FUNCTION__, cwq, worker, work);
+		return;
+	}
+
+	gcwq = cwq->gcwq;
+	bwh = busy_worker_head(gcwq, work);
+	cpu_intensive = cwq->wq->flags & WQ_CPU_INTENSIVE;
+	f = work->func;
 #ifdef CONFIG_LOCKDEP
 	/*
 	 * It is permissible to free the struct work_struct from
@@ -1870,7 +1884,20 @@ __acquires(&gcwq->lock)
 	lock_map_acquire_read(&cwq->wq->lockdep_map);
 	lock_map_acquire(&lockdep_map);
 	trace_workqueue_execute_start(work);
+#if defined(CONFIG_SYSTEM_LOAD_ANALYZER)
+{
+	u64 work_start_time, work_end_time, work_delta_time;
+	work_start_time = get_load_analyzer_time();
+#endif
+	sec_debug_work_log(worker, work, f, 1);
 	f(work);
+	sec_debug_work_log(worker, work, f, 2);
+#if defined(CONFIG_SYSTEM_LOAD_ANALYZER)
+	work_end_time = get_load_analyzer_time();
+	work_delta_time = work_end_time -work_start_time;
+	__slp_store_work_history(work ,f ,work_start_time, work_end_time);
+}
+#endif
 	/*
 	 * While we must be careful to not use "work" after this, the trace
 	 * point will only record its address.

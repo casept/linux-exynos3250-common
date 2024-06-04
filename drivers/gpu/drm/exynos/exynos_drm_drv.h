@@ -31,11 +31,27 @@
 
 #include <linux/module.h>
 #include "drm.h"
-
+#ifdef CONFIG_TRUSTONIC_TRUSTED_UI_NOTIFY
+#include <t-base-tui.h>
+#endif
 #define MAX_CRTC	3
 #define MAX_PLANE	5
 #define MAX_FB_BUFFER	4
 #define DEFAULT_ZPOS	-1
+
+#define _wait_for(COND, MS) ({ \
+	unsigned long timeout__ = jiffies + msecs_to_jiffies(MS);	\
+	int ret__ = 0;							\
+	while (!(COND)) {						\
+		if (time_after(jiffies, timeout__)) {			\
+			ret__ = -ETIMEDOUT;				\
+			break;						\
+		}							\
+	}								\
+	ret__;								\
+})
+
+#define wait_for(COND, MS) _wait_for(COND, MS)
 
 struct drm_device;
 struct exynos_drm_overlay;
@@ -54,18 +70,32 @@ enum exynos_drm_output_type {
 	EXYNOS_DISPLAY_TYPE_VIDI,
 };
 
+struct exynos_drm_partial_pos {
+	unsigned int x;
+	unsigned int y;
+	unsigned int w;
+	unsigned int h;
+};
+
 /*
  * Exynos drm overlay ops structure.
  *
  * @mode_set: copy drm overlay info to hw specific overlay info.
  * @commit: apply hardware specific overlay data to registers.
+ * @enable: enable hardware specific overlay.
  * @disable: disable hardware specific overlay.
  */
 struct exynos_drm_overlay_ops {
 	void (*mode_set)(struct device *subdrv_dev,
 			 struct exynos_drm_overlay *overlay);
 	void (*commit)(struct device *subdrv_dev, int zpos);
+	void (*enable)(struct device *subdrv_dev, int zpos);
 	void (*disable)(struct device *subdrv_dev, int zpos);
+	void (*partial_resolution)(struct device *dev,
+					struct exynos_drm_partial_pos *pos);
+	void (*request_partial_update)(struct device *dev);
+	void (*adjust_partial_region)(struct device *dev,
+					struct exynos_drm_partial_pos *pos);
 };
 
 /*
@@ -77,6 +107,8 @@ struct exynos_drm_overlay_ops {
  *	- the unit is screen coordinates.
  * @fb_width: width of a framebuffer.
  * @fb_height: height of a framebuffer.
+ * @src_width: width of a partial image to be displayed from framebuffer.
+ * @src_height: height of a partial image to be displayed from framebuffer.
  * @crtc_x: offset x on hardware screen.
  * @crtc_y: offset y on hardware screen.
  * @crtc_width: window width to be displayed (hardware screen).
@@ -90,7 +122,6 @@ struct exynos_drm_overlay_ops {
  * @pixel_format: fourcc pixel format of this overlay
  * @dma_addr: array of bus(accessed by dma) address to the memory region
  *	      allocated for a overlay.
- * @vaddr: array of virtual memory addresss to this overlay.
  * @zpos: order of overlay layer(z position).
  * @default_win: a window to be enabled.
  * @color_key: color key on or off.
@@ -108,6 +139,8 @@ struct exynos_drm_overlay {
 	unsigned int fb_y;
 	unsigned int fb_width;
 	unsigned int fb_height;
+	unsigned int src_width;
+	unsigned int src_height;
 	unsigned int crtc_x;
 	unsigned int crtc_y;
 	unsigned int crtc_width;
@@ -120,7 +153,6 @@ struct exynos_drm_overlay {
 	unsigned int pitch;
 	uint32_t pixel_format;
 	dma_addr_t dma_addr[MAX_FB_BUFFER];
-	void __iomem *vaddr[MAX_FB_BUFFER];
 	int zpos;
 
 	bool default_win;
@@ -150,11 +182,15 @@ struct exynos_drm_display_ops {
 	void *(*get_panel)(struct device *dev);
 	int (*check_timing)(struct device *dev, void *timing);
 	int (*power_on)(struct device *dev, int mode);
+	int (*set_partial_region)(struct device *dev,
+					struct exynos_drm_partial_pos *pos);
 };
 
 /*
  * Exynos drm manager ops
  *
+ * @initialize: initializes the manager with drm_dev
+ * @remove: cleans up the manager for removal
  * @dpms: control device power.
  * @apply: set timing, vblank and overlay data to registers.
  * @mode_fixup: fix mode data comparing to hw specific display mode.
@@ -162,10 +198,15 @@ struct exynos_drm_display_ops {
  *	      would be called by encoder->mode_set().
  * @get_max_resol: get maximum resolution to specific hardware.
  * @commit: set current hw specific display mode to hw.
+ * @prepare_vblank: prepare for waiting vblank.
  * @enable_vblank: specific driver callback for enabling vblank interrupt.
  * @disable_vblank: specific driver callback for disabling vblank interrupt.
+ * @wait_for_vblank: wait for vblank interrupt to make sure that
+ *	hardware overlay is updated.
  */
 struct exynos_drm_manager_ops {
+	int (*initialize)(struct device *dev, struct drm_device *drm_dev, int pipe);
+	void (*remove)(struct device *dev);
 	void (*dpms)(struct device *subdrv_dev, int mode);
 	void (*apply)(struct device *subdrv_dev);
 	void (*mode_fixup)(struct device *subdrv_dev,
@@ -176,8 +217,14 @@ struct exynos_drm_manager_ops {
 	void (*get_max_resol)(struct device *subdrv_dev, unsigned int *width,
 				unsigned int *height);
 	void (*commit)(struct device *subdrv_dev);
+	void (*prepare_vblank)(struct device *subdrv_dev);
 	int (*enable_vblank)(struct device *subdrv_dev);
 	void (*disable_vblank)(struct device *subdrv_dev);
+	void (*wait_for_vblank)(struct device *subdrv_dev);
+	int (*lp_mode_enable)(struct device *dev, bool enable);
+#ifdef CONFIG_TRUSTONIC_TRUSTED_UI_NOTIFY
+	int (*secure_mode_change)(struct device *dev, int mode);
+#endif
 };
 
 /*
@@ -206,7 +253,55 @@ struct exynos_drm_manager {
 };
 
 /*
+ * Exynos drm g2d private structure
+ *
+ * @dev: device object to device driver for using iommu.
+ */
+struct exynos_drm_g2d_private {
+	struct device		*dev;
+	struct list_head	inuse_cmdlist;
+	struct list_head	event_list;
+	struct list_head	userptr_list;
+};
+
+/*
+ * Exynos drm ipp private structure
+ *
+ * @dev: device object to device driver for using driver data.
+ * @ippdrv_list: list of ippdrv.
+ * @event_list: list head to event.
+ */
+struct exynos_drm_ipp_private {
+	struct device	*dev;
+	struct list_head	ippdrv_list;
+	struct list_head	event_list;
+};
+
+/*
+ * Exynos drm ipp private structure
+ *
+ * @dev: device object to device driver for using driver data.
+ */
+struct exynos_drm_hdmi_private {
+	struct device	*dev;
+};
+
+struct drm_exynos_file_private {
+	struct exynos_drm_g2d_private	*g2d_priv;
+	struct exynos_drm_ipp_private	*ipp_priv;
+	struct exynos_drm_hdmi_private	*hdmi_priv;
+	pid_t				tgid;
+};
+
+/*
  * Exynos drm private structure.
+ *
+ * @da_start: start address to device address space.
+ *	with iommu, device address space starts from this address
+ *	otherwise default one.
+ * @da_space_size: size of device address space.
+ *	if 0 then default value is used for it.
+ * @da_space_order: order to device address space.
  */
 struct exynos_drm_private {
 	struct drm_fb_helper *fb_helper;
@@ -219,6 +314,16 @@ struct exynos_drm_private {
 	 * this array is used to be aware of which crtc did it request vblank.
 	 */
 	struct drm_crtc *crtc[MAX_CRTC];
+	struct drm_property *plane_zpos_property;
+	struct drm_property *crtc_mode_property;
+	struct drm_property *connector_panel_dpms_property;
+	struct input_handler *input_hdl;
+#ifdef CONFIG_TRUSTONIC_TRUSTED_UI_NOTIFY
+	struct notifier_block	nb_ctrl;
+#endif
+	unsigned long da_start;
+	unsigned long da_space_size;
+	unsigned long da_space_order;
 };
 
 /*
@@ -246,7 +351,7 @@ struct exynos_drm_subdrv {
 	struct exynos_drm_manager *manager;
 
 	int (*probe)(struct drm_device *drm_dev, struct device *dev);
-	void (*remove)(struct drm_device *dev);
+	void (*remove)(struct drm_device *drm_dev, struct device *dev);
 	int (*open)(struct drm_device *drm_dev, struct device *dev,
 			struct drm_file *file);
 	void (*close)(struct drm_device *drm_dev, struct device *dev,
@@ -283,8 +388,16 @@ int exynos_drm_subdrv_open(struct drm_device *dev, struct drm_file *file);
 void exynos_drm_subdrv_close(struct drm_device *dev, struct drm_file *file);
 
 extern struct platform_driver fimd_driver;
+extern struct platform_driver hdcp_driver;
 extern struct platform_driver hdmi_driver;
 extern struct platform_driver mixer_driver;
 extern struct platform_driver exynos_drm_common_hdmi_driver;
 extern struct platform_driver vidi_driver;
+extern struct platform_driver g2d_driver;
+extern struct platform_driver rotator_driver;
+extern struct platform_driver fimc_driver;
+extern struct platform_driver gsc_driver;
+extern struct platform_driver sc_driver;
+extern struct platform_driver ipp_driver;
+extern struct platform_driver dbg_driver;
 #endif

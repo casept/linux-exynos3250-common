@@ -29,6 +29,19 @@
 #ifndef _EXYNOS_DRM_FBDEV_H_
 #define _EXYNOS_DRM_FBDEV_H_
 
+struct exynos_drm_fbdev_ops {
+	/* Create gem object */
+	struct exynos_drm_gem_obj *(*create) (struct drm_device *dev,
+							unsigned long size);
+	/* Destroy gem object */
+	void (*destroy) (struct exynos_drm_gem_obj *exynos_gem_obj);
+
+	/* Clear buffer */
+	void (*clear) (struct exynos_drm_gem_obj *exynos_gem_obj);
+};
+
+extern struct exynos_drm_fbdev_ops exynos_drm_fbdev_gem_ops;
+
 int exynos_drm_fbdev_init(struct drm_device *dev);
 int exynos_drm_fbdev_reinit(struct drm_device *dev);
 void exynos_drm_fbdev_fini(struct drm_device *dev);

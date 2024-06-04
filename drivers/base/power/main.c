@@ -28,9 +28,16 @@
 #include <linux/sched.h>
 #include <linux/async.h>
 #include <linux/suspend.h>
+#include <linux/timer.h>
 
 #include "../base.h"
 #include "power.h"
+
+#ifdef CONFIG_DISPLAY_EARLY_DPMS
+#include <drm/exynos_drm.h>
+static void device_complete(struct device *dev, pm_message_t state);
+LIST_HEAD(dpm_early_comp_list);
+#endif
 
 typedef int (*pm_callback_t)(struct device *);
 
@@ -54,6 +61,12 @@ struct suspend_stats suspend_stats;
 static DEFINE_MUTEX(dpm_list_mtx);
 static pm_message_t pm_transition;
 
+struct dpm_watchdog {
+	struct device		*dev;
+	struct task_struct	*tsk;
+	struct timer_list	timer;
+};
+
 static int async_error;
 
 /**
@@ -64,6 +77,7 @@ void device_pm_init(struct device *dev)
 {
 	dev->power.is_prepared = false;
 	dev->power.is_suspended = false;
+	dev->power.is_completed = false;
 	init_completion(&dev->power.completion);
 	complete_all(&dev->power.completion);
 	dev->power.wakeup = NULL;
@@ -389,6 +403,56 @@ static int dpm_run_callback(pm_callback_t cb, struct device *dev,
 	return error;
 }
 
+/**
+ * dpm_wd_handler - Driver suspend / resume watchdog handler.
+ *
+ * Called when a driver has timed out suspending or resuming.
+ * There's not much we can do here to recover so BUG() out for
+ * a crash-dump
+ */
+static void dpm_wd_handler(unsigned long data)
+{
+	struct dpm_watchdog *wd = (void *)data;
+	struct device *dev      = wd->dev;
+	struct task_struct *tsk = wd->tsk;
+
+	dev_emerg(dev, "**** DPM device timeout ****\n");
+	show_stack(tsk, NULL);
+
+	BUG();
+}
+
+/**
+ * dpm_wd_set - Enable pm watchdog for given device.
+ * @wd: Watchdog. Must be allocated on the stack.
+ * @dev: Device to handle.
+ */
+static void dpm_wd_set(struct dpm_watchdog *wd, struct device *dev)
+{
+	struct timer_list *timer = &wd->timer;
+
+	wd->dev = dev;
+	wd->tsk = get_current();
+
+	init_timer_on_stack(timer);
+	timer->expires = jiffies + HZ * 12;
+	timer->function = dpm_wd_handler;
+	timer->data = (unsigned long)wd;
+	add_timer(timer);
+}
+
+/**
+ * dpm_wd_clear - Disable pm watchdog.
+ * @wd: Watchdog to disable.
+ */
+static void dpm_wd_clear(struct dpm_watchdog *wd)
+{
+	struct timer_list *timer = &wd->timer;
+
+	del_timer_sync(timer);
+	destroy_timer_on_stack(timer);
+}
+
 /*------------------------- Resume routines -------------------------*/
 
 /**
@@ -565,6 +629,7 @@ static int device_resume(struct device *dev, pm_message_t state, bool async)
 	char *info = NULL;
 	int error = 0;
 	bool put = false;
+	struct dpm_watchdog wd;
 
 	TRACE_DEVICE(dev);
 	TRACE_RESUME(0);
@@ -577,6 +642,7 @@ static int device_resume(struct device *dev, pm_message_t state, bool async)
 	 * a resumed device, even if the device hasn't been completed yet.
 	 */
 	dev->power.is_prepared = false;
+	dpm_wd_set(&wd, dev);
 
 	if (!dev->power.is_suspended)
 		goto Unlock;
@@ -631,6 +697,7 @@ static int device_resume(struct device *dev, pm_message_t state, bool async)
 
  Unlock:
 	device_unlock(dev);
+	dpm_wd_clear(&wd);
 	complete_all(&dev->power.completion);
 
 	TRACE_RESUME(error);
@@ -669,6 +736,9 @@ void dpm_resume(pm_message_t state)
 {
 	struct device *dev;
 	ktime_t starttime = ktime_get();
+#ifdef CONFIG_DISPLAY_EARLY_DPMS
+	struct display_early_dpms_nb_event event;
+#endif
 
 	might_sleep();
 
@@ -676,9 +746,65 @@ void dpm_resume(pm_message_t state)
 	pm_transition = state;
 	async_error = 0;
 
+#ifdef CONFIG_DISPLAY_EARLY_DPMS
+	if (list_empty(&dpm_early_comp_list)) {
+		pr_info("[%s]empty:early_comp_list\n", __func__);
+		goto normal;
+	}
+
+	list_for_each_entry(dev, &dpm_early_comp_list, power.early_comp_entry) {
+		int error;
+
+		get_device(dev);
+
+		pr_debug("[%s:%d]try:early_comp[%s]state[%d %d %d]\n",
+			__func__, __LINE__, dev_name(dev), dev->power.is_prepared,
+			dev->power.is_suspended, dev->power.is_completed);
+
+		mutex_unlock(&dpm_list_mtx);
+
+		if (!dev->power.is_suspended) {
+			pr_info("[%s:%d]bypass:early_comp[%s]state[%d %d %d]\n",
+				__func__, __LINE__, dev_name(dev), dev->power.is_prepared,
+				dev->power.is_suspended, dev->power.is_completed);
+			mutex_lock(&dpm_list_mtx);
+			put_device(dev);
+			goto normal;
+		}
+
+		error = device_resume(dev, state, false);
+		if (error) {
+			suspend_stats.failed_resume++;
+			dpm_save_failed_step(SUSPEND_RESUME);
+			dpm_save_failed_dev(dev_name(dev));
+			pm_dev_err(dev, state, "", error);
+		}
+		device_complete(dev, state);
+		mutex_lock(&dpm_list_mtx);
+
+		pr_debug("[%s:%d]done:early_comp[%s]state[%d %d %d]\n",
+			__func__, __LINE__, dev_name(dev), dev->power.is_prepared,
+			dev->power.is_suspended, dev->power.is_completed);
+
+		put_device(dev);
+	}
+
+	mutex_unlock(&dpm_list_mtx);
+	event.id = DISPLAY_EARLY_DPMS_ID_PRIMARY;
+	event.data = (void *)true;
+	display_early_dpms_nb_send_event(DISPLAY_EARLY_DPMS_COMMIT,
+		(void *)&event);
+	mutex_lock(&dpm_list_mtx);
+
+normal:
+#endif
 	list_for_each_entry(dev, &dpm_suspended_list, power.entry) {
 		INIT_COMPLETION(dev->power.completion);
 		if (is_async(dev)) {
+			pr_debug("[%s:%d]try:async[%s]state[%d %d %d]\n",
+				__func__, __LINE__, dev_name(dev), dev->power.is_prepared,
+				dev->power.is_suspended, dev->power.is_completed);
+
 			get_device(dev);
 			async_schedule(async_resume, dev);
 		}
@@ -689,6 +815,17 @@ void dpm_resume(pm_message_t state)
 		get_device(dev);
 		if (!is_async(dev)) {
 			int error;
+
+			pr_debug("[%s:%d]try:sync[%s]state[%d %d %d]\n",
+				__func__, __LINE__, dev_name(dev), dev->power.is_prepared,
+				dev->power.is_suspended, dev->power.is_completed);
+
+			if (!dev->power.is_suspended) {
+				pr_debug("[%s:%d]bypass:sync[%s]state[%d %d %d]\n",
+					__func__, __LINE__, dev_name(dev), dev->power.is_prepared,
+					dev->power.is_suspended, dev->power.is_completed);
+				goto bypass;
+			}
 
 			mutex_unlock(&dpm_list_mtx);
 
@@ -702,6 +839,7 @@ void dpm_resume(pm_message_t state)
 
 			mutex_lock(&dpm_list_mtx);
 		}
+bypass:
 		if (!list_empty(&dev->power.entry))
 			list_move_tail(&dev->power.entry, &dpm_prepared_list);
 		put_device(dev);
@@ -722,6 +860,10 @@ static void device_complete(struct device *dev, pm_message_t state)
 	char *info = NULL;
 
 	device_lock(dev);
+	if (dev->power.is_completed) {
+		pr_debug("[%s:%d][%s]bypass\n",  __func__, __LINE__, dev_name(dev));
+		goto out;
+	}
 
 	if (dev->pm_domain) {
 		info = "completing power domain ";
@@ -747,6 +889,9 @@ static void device_complete(struct device *dev, pm_message_t state)
 		callback(dev);
 	}
 
+	dev->power.is_completed = true;
+
+out:
 	device_unlock(dev);
 }
 
@@ -772,10 +917,14 @@ void dpm_complete(pm_message_t state)
 		dev->power.is_prepared = false;
 		list_move(&dev->power.entry, &list);
 		mutex_unlock(&dpm_list_mtx);
-
 		device_complete(dev, state);
 
 		mutex_lock(&dpm_list_mtx);
+
+		pr_debug("[%s:%d][%s]state[%d %d %d]\n", __func__, __LINE__,
+			dev_name(dev), dev->power.is_prepared,
+			dev->power.is_suspended, dev->power.is_completed);
+
 		put_device(dev);
 	}
 	list_splice(&list, &dpm_list);
@@ -889,6 +1038,11 @@ static int dpm_suspend_noirq(pm_message_t state)
 		if (!list_empty(&dev->power.entry))
 			list_move(&dev->power.entry, &dpm_noirq_list);
 		put_device(dev);
+
+		if (pm_wakeup_pending()) {
+			error = -EBUSY;
+			break;
+		}
 	}
 	mutex_unlock(&dpm_list_mtx);
 	if (error)
@@ -962,6 +1116,11 @@ static int dpm_suspend_late(pm_message_t state)
 		if (!list_empty(&dev->power.entry))
 			list_move(&dev->power.entry, &dpm_late_early_list);
 		put_device(dev);
+
+		if (pm_wakeup_pending()) {
+			error = -EBUSY;
+			break;
+		}
 	}
 	mutex_unlock(&dpm_list_mtx);
 	if (error)
@@ -1025,6 +1184,7 @@ static int __device_suspend(struct device *dev, pm_message_t state, bool async)
 	pm_callback_t callback = NULL;
 	char *info = NULL;
 	int error = 0;
+	struct dpm_watchdog wd;
 
 	dpm_wait_for_children(dev, async);
 
@@ -1040,6 +1200,8 @@ static int __device_suspend(struct device *dev, pm_message_t state, bool async)
 		async_error = -EBUSY;
 		goto Complete;
 	}
+
+	dpm_wd_set(&wd, dev);
 
 	device_lock(dev);
 
@@ -1095,6 +1257,8 @@ static int __device_suspend(struct device *dev, pm_message_t state, bool async)
 	}
 
 	device_unlock(dev);
+
+	dpm_wd_clear(&wd);
 
  Complete:
 	complete_all(&dev->power.completion);
@@ -1165,8 +1329,14 @@ int dpm_suspend(pm_message_t state)
 			put_device(dev);
 			break;
 		}
+
 		if (!list_empty(&dev->power.entry))
 			list_move(&dev->power.entry, &dpm_suspended_list);
+
+		pr_debug("[%s:%d][%s]state[%d %d %d]\n", __func__, __LINE__,
+			dev_name(dev), dev->power.is_prepared,
+			dev->power.is_suspended, dev->power.is_completed);
+
 		put_device(dev);
 		if (async_error)
 			break;
@@ -1239,10 +1409,20 @@ static int device_prepare(struct device *dev, pm_message_t state)
 int dpm_prepare(pm_message_t state)
 {
 	int error = 0;
+#ifdef CONFIG_DISPLAY_EARLY_DPMS
+	struct display_early_dpms_nb_event event;
+
+	event.id = DISPLAY_EARLY_DPMS_ID_PRIMARY;
+	event.data = (void *)false;
+
+	display_early_dpms_nb_send_event(DISPLAY_EARLY_DPMS_COMMIT,
+		(void *)&event);
+#endif
 
 	might_sleep();
 
 	mutex_lock(&dpm_list_mtx);
+
 	while (!list_empty(&dpm_list)) {
 		struct device *dev = to_device(dpm_list.next);
 
@@ -1265,8 +1445,14 @@ int dpm_prepare(pm_message_t state)
 			break;
 		}
 		dev->power.is_prepared = true;
+		dev->power.is_completed = false;
 		if (!list_empty(&dev->power.entry))
 			list_move_tail(&dev->power.entry, &dpm_prepared_list);
+
+		pr_debug("[%s:%d][%s]state[%d %d %d]\n", __func__, __LINE__,
+			dev_name(dev), dev->power.is_prepared,
+			dev->power.is_suspended, dev->power.is_completed);
+
 		put_device(dev);
 	}
 	mutex_unlock(&dpm_list_mtx);

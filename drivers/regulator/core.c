@@ -29,6 +29,12 @@
 #include <linux/regulator/driver.h>
 #include <linux/regulator/machine.h>
 #include <linux/module.h>
+#if defined(CONFIG_SYSTEM_LOAD_ANALYZER)
+#include <linux/load_analyzer.h>
+#endif
+#ifdef CONFIG_SLEEP_MONITOR
+#include <linux/power/sleep_monitor.h>
+#endif
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/regulator.h>
@@ -1951,6 +1957,13 @@ int regulator_set_voltage(struct regulator *regulator, int min_uV, int max_uV)
 	struct regulator_dev *rdev = regulator->rdev;
 	int ret = 0;
 
+#if defined(CONFIG_SLP_MINI_TRACER)
+{
+	char str[64];
+	sprintf(str, "regulator S %p %d-%d\n", regulator, min_uV, max_uV);
+	kernel_mini_tracer(str, TIME_ON | FLUSH_CACHE);
+}
+#endif
 	mutex_lock(&rdev->mutex);
 
 	/* If we're setting the same range as last time the change
@@ -1982,6 +1995,15 @@ int regulator_set_voltage(struct regulator *regulator, int min_uV, int max_uV)
 
 out:
 	mutex_unlock(&rdev->mutex);
+
+#if defined(CONFIG_SLP_MINI_TRACER)
+{
+	char str[64];
+	sprintf(str, "regulator E %p %d-%d ret=%d\n", regulator, min_uV, max_uV, ret);
+	kernel_mini_tracer(str, TIME_ON | FLUSH_CACHE);
+}
+#endif
+
 	return ret;
 }
 EXPORT_SYMBOL_GPL(regulator_set_voltage);
@@ -3238,6 +3260,54 @@ static int __init regulator_init(void)
 /* init early to allow our consumers to complete system booting */
 core_initcall(regulator_init);
 
+
+#ifdef CONFIG_SLEEP_MONITOR
+#define REGULATOR_PRETTY_OFFSET 10
+#define REGULATOR_MAX_NUM 64
+int regulator_sleep_monitor_read64(void *priv, long long *raw_val,
+		int check_level, int caller_type)
+{
+	struct regulator_dev *rdev;
+	int temp, idx = 0, i, enabled_num = 0;
+	long long orig_value = 0, reverse_value = 0;
+
+
+	mutex_lock(&regulator_list_mutex);
+	list_for_each_entry(rdev, &regulator_list, list) {
+		mutex_lock(&rdev->mutex);
+		temp = _regulator_is_enabled(rdev);
+		mutex_unlock(&rdev->mutex);
+
+		enabled_num += temp;
+		orig_value += ((long long)temp) << idx++;
+		if(idx == REGULATOR_MAX_NUM)
+			break;
+	}
+	mutex_unlock(&regulator_list_mutex);
+
+	/* Rearrange bit order to place regulator.0 to bit 0 */
+	for (i = 0; i < idx; i++) {
+		reverse_value |= ((orig_value & (long long)1 << i) >> i) << (idx - 1 - i);
+	}
+
+	*raw_val = reverse_value;
+
+	if (enabled_num > REGULATOR_PRETTY_OFFSET) {
+		if (enabled_num >= REGULATOR_PRETTY_OFFSET + DEVICE_UNKNOWN)
+			return DEVICE_UNKNOWN - 1;
+		else
+			return enabled_num - REGULATOR_PRETTY_OFFSET;
+	}
+	else /* If enabled regulator is less than REGULATOR_PRETTY_OFFSET, return 0 */
+		return 0;
+}
+
+static struct sleep_monitor_ops regulator_sleep_monitor_ops = {
+	.read64_cb_func = regulator_sleep_monitor_read64,
+};
+#endif
+
+
 static int __init regulator_init_complete(void)
 {
 	struct regulator_dev *rdev;
@@ -3292,6 +3362,12 @@ static int __init regulator_init_complete(void)
 unlock:
 		mutex_unlock(&rdev->mutex);
 	}
+
+
+#ifdef CONFIG_SLEEP_MONITOR
+		sleep_monitor_register_ops(NULL, &regulator_sleep_monitor_ops,
+		SLEEP_MONITOR_REGULATOR);
+#endif
 
 	mutex_unlock(&regulator_list_mutex);
 

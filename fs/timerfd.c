@@ -136,6 +136,8 @@ static int timerfd_setup(struct timerfd_ctx *ctx, int flags,
 
 	htmode = (flags & TFD_TIMER_ABSTIME) ?
 		HRTIMER_MODE_ABS: HRTIMER_MODE_REL;
+	htmode |= (flags & TFD_TIMER_DEFERRABLE) ? HRTIMER_MODE_DEFERRABLE : 0;
+	htmode |= task_get_cgroup_timer_mode(current);
 
 	texp = timespec_to_ktime(ktmr->it_value);
 	ctx->expired = 0;

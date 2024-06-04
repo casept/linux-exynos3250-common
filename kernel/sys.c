@@ -54,6 +54,9 @@
 #include <asm/io.h>
 #include <asm/unistd.h>
 
+#define __POWEROFF_WATCHDOG__
+#undef __POWEROFF_WATCHDOG_PANIC_
+
 #ifndef SET_UNALIGN_CTL
 # define SET_UNALIGN_CTL(a,b)	(-EINVAL)
 #endif
@@ -314,13 +317,45 @@ void emergency_restart(void)
 }
 EXPORT_SYMBOL_GPL(emergency_restart);
 
+
+#if defined (__POWEROFF_WATCHDOG__)
+static struct timer_list poweroff_watchdog_timer;
+char temp_cmd[30];
+
+#define POWEROFF_WDOG_TIME 10 /* seconds */
+
+#define POWEROFF_TYPE_RESTART	0
+#define POWEROFF_TYPE_OFF		1
+
+static void __poweroff_watchdog_expired(unsigned long type)
+{
+
+	printk(KERN_EMERG "%s: Fail to power off. type=%ld, cmd=%s comm=%s\n", __func__, type, temp_cmd, current->comm);
+
+#if defined (__POWEROFF_WATCHDOG_PANIC_)
+	panic("Fail to power off");
+#endif
+
+	switch (type) {
+		case POWEROFF_TYPE_RESTART:
+			machine_restart(temp_cmd);
+			break;
+
+		case POWEROFF_TYPE_OFF:
+			machine_power_off();
+			break;
+	}
+
+	return;
+}
+#endif
+
 void kernel_restart_prepare(char *cmd)
 {
 	blocking_notifier_call_chain(&reboot_notifier_list, SYS_RESTART, cmd);
 	system_state = SYSTEM_RESTART;
 	usermodehelper_disable();
 	device_shutdown();
-	syscore_shutdown();
 }
 
 /**
@@ -354,6 +389,29 @@ int unregister_reboot_notifier(struct notifier_block *nb)
 }
 EXPORT_SYMBOL(unregister_reboot_notifier);
 
+/* Add backwards compatibility for stable trees. */
+#ifndef PF_NO_SETAFFINITY
+#define PF_NO_SETAFFINITY		PF_THREAD_BOUND
+#endif
+
+static void migrate_to_reboot_cpu(void)
+{
+	/* The boot cpu is always logical cpu 0 */
+	int cpu = 0;
+
+	cpu_hotplug_disable();
+
+	/* Make certain the cpu I'm about to reboot on is online */
+	if (!cpu_online(cpu))
+		cpu = cpumask_first(cpu_online_mask);
+
+	/* Prevent races with other tasks migrating this task */
+	current->flags |= PF_NO_SETAFFINITY;
+
+	/* Make certain I only run on the appropriate processor */
+	set_cpus_allowed_ptr(current, cpumask_of(cpu));
+}
+
 /**
  *	kernel_restart - reboot the system
  *	@cmd: pointer to buffer containing command to execute for restart
@@ -364,8 +422,20 @@ EXPORT_SYMBOL(unregister_reboot_notifier);
  */
 void kernel_restart(char *cmd)
 {
+
+#if defined (__POWEROFF_WATCHDOG__)
+	init_timer(&poweroff_watchdog_timer);
+	poweroff_watchdog_timer.function = __poweroff_watchdog_expired;
+	poweroff_watchdog_timer.expires = jiffies + POWEROFF_WDOG_TIME*HZ;
+	poweroff_watchdog_timer.data = POWEROFF_TYPE_RESTART;
+	if (cmd)
+		strncpy(temp_cmd, cmd, sizeof(temp_cmd));
+	add_timer(&poweroff_watchdog_timer);
+#endif
+
 	kernel_restart_prepare(cmd);
-	disable_nonboot_cpus();
+	migrate_to_reboot_cpu();
+	syscore_shutdown();
 	if (!cmd)
 		printk(KERN_EMERG "Restarting system.\n");
 	else
@@ -391,6 +461,7 @@ static void kernel_shutdown_prepare(enum system_states state)
 void kernel_halt(void)
 {
 	kernel_shutdown_prepare(SYSTEM_HALT);
+	migrate_to_reboot_cpu();
 	syscore_shutdown();
 	printk(KERN_EMERG "System halted.\n");
 	kmsg_dump(KMSG_DUMP_HALT);
@@ -406,10 +477,19 @@ EXPORT_SYMBOL_GPL(kernel_halt);
  */
 void kernel_power_off(void)
 {
+
+#if defined (__POWEROFF_WATCHDOG__)
+	init_timer(&poweroff_watchdog_timer);
+	poweroff_watchdog_timer.function = __poweroff_watchdog_expired;
+	poweroff_watchdog_timer.expires = jiffies + POWEROFF_WDOG_TIME*HZ;
+	poweroff_watchdog_timer.data = POWEROFF_TYPE_OFF;
+	add_timer(&poweroff_watchdog_timer);
+#endif
+
 	kernel_shutdown_prepare(SYSTEM_POWER_OFF);
 	if (pm_power_off_prepare)
 		pm_power_off_prepare();
-	disable_nonboot_cpus();
+	migrate_to_reboot_cpu();
 	syscore_shutdown();
 	printk(KERN_EMERG "Power down.\n");
 	kmsg_dump(KMSG_DUMP_POWEROFF);
@@ -432,6 +512,8 @@ SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,
 {
 	char buffer[256];
 	int ret = 0;
+
+	printk("%s: comm=%s, cmd=0x%08x\n", __func__, current->comm, cmd);
 
 	/* We only trust the superuser with rebooting the system. */
 	if (!capable(CAP_SYS_BOOT))
@@ -1927,6 +2009,9 @@ SYSCALL_DEFINE5(prctl, int, option, unsigned long, arg2, unsigned long, arg3,
 			break;
 		case PR_GET_TIMERSLACK:
 			error = current->timer_slack_ns;
+			break;
+		case PR_GET_EFFECTIVE_TIMERSLACK:
+			error = task_get_effective_timer_slack(current);
 			break;
 		case PR_SET_TIMERSLACK:
 			if (arg2 <= 0)

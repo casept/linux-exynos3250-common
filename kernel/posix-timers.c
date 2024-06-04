@@ -801,6 +801,8 @@ common_timer_set(struct k_itimer *timr, int flags,
 		return 0;
 
 	mode = flags & TIMER_ABSTIME ? HRTIMER_MODE_ABS : HRTIMER_MODE_REL;
+	mode |= flags & TIMER_DEFERRABLE ? HRTIMER_MODE_DEFERRABLE : 0;
+	mode |= task_get_cgroup_timer_mode(current);
 	hrtimer_init(&timr->it.real.timer, timr->it_clock, mode);
 	timr->it.real.timer.function = posix_timer_fn;
 
@@ -1034,9 +1036,13 @@ SYSCALL_DEFINE2(clock_getres, const clockid_t, which_clock,
 static int common_nsleep(const clockid_t which_clock, int flags,
 			 struct timespec *tsave, struct timespec __user *rmtp)
 {
-	return hrtimer_nanosleep(tsave, rmtp, flags & TIMER_ABSTIME ?
-				 HRTIMER_MODE_ABS : HRTIMER_MODE_REL,
-				 which_clock);
+	enum hrtimer_mode mode;
+
+	mode = flags & TIMER_ABSTIME ? HRTIMER_MODE_ABS : HRTIMER_MODE_REL;
+	mode |= flags & TIMER_DEFERRABLE ? HRTIMER_MODE_DEFERRABLE : 0;
+	mode |= task_get_cgroup_timer_mode(current);
+
+	return hrtimer_nanosleep(tsave, rmtp, mode, which_clock);
 }
 
 SYSCALL_DEFINE4(clock_nanosleep, const clockid_t, which_clock, int, flags,

@@ -15,6 +15,7 @@
 #include <linux/lockdep.h>
 #include <linux/export.h>
 #include <linux/sysctl.h>
+#include <asm/cacheflush.h>
 
 /*
  * The number of tasks checked:
@@ -105,6 +106,8 @@ static void check_hung_task(struct task_struct *t, unsigned long timeout)
 			" disables this message.\n");
 	sched_show_task(t);
 	debug_show_held_locks(t);
+
+	flush_cache_all();
 
 	touch_nmi_watchdog();
 

@@ -25,9 +25,19 @@
 #include <linux/suspend.h>
 #include <linux/syscore_ops.h>
 #include <linux/ftrace.h>
+#include <linux/rtc.h>
 #include <trace/events/power.h>
 
 #include "power.h"
+#ifdef CONFIG_PM_SLEEP_HISTORY
+#include <linux/time.h>
+#include <linux/power/sleep_history.h>
+static bool is_dpm_fail = false;
+#endif
+
+#if defined(CONFIG_SYSTEM_LOAD_ANALYZER)
+#include <linux/load_analyzer.h>
+#endif
 
 const char *const pm_states[PM_SUSPEND_MAX] = {
 	[PM_SUSPEND_STANDBY]	= "standby",
@@ -142,6 +152,12 @@ static int suspend_enter(suspend_state_t state, bool *wakeup)
 		if (error)
 			goto Platform_finish;
 	}
+#ifdef CONFIG_PM_SLEEP_HISTORY
+	{
+		struct timespec ts = current_kernel_time();
+		sleep_history_marker(SLEEP_HISTORY_SUSPEND_ENTRY, &ts, NULL);
+	}
+#endif
 
 	error = dpm_suspend_end(PMSG_SUSPEND);
 	if (error) {
@@ -215,8 +231,12 @@ int suspend_devices_and_enter(suspend_state_t state)
 	suspend_console();
 	ftrace_stop();
 	suspend_test_start();
+
 	error = dpm_suspend_start(PMSG_SUSPEND);
 	if (error) {
+#ifdef CONFIG_PM_SLEEP_HISTORY
+		is_dpm_fail = true;
+#endif
 		printk(KERN_ERR "PM: Some devices failed to suspend\n");
 		goto Recover_platform;
 	}
@@ -232,6 +252,15 @@ int suspend_devices_and_enter(suspend_state_t state)
  Resume_devices:
 	suspend_test_start();
 	dpm_resume_end(PMSG_RESUME);
+#ifdef CONFIG_PM_SLEEP_HISTORY
+	{
+		if (likely(!is_dpm_fail)) {
+			struct timespec ts = current_kernel_time();
+			sleep_history_marker(SLEEP_HISTORY_SUSPEND_EXIT, &ts, NULL);
+		} else
+			is_dpm_fail = false;
+	}
+#endif
 	suspend_test_finish("resume devices");
 	ftrace_start();
 	resume_console();
@@ -268,6 +297,8 @@ static void suspend_finish(void)
  * Fail if that's not the case.  Otherwise, prepare for system suspend, make the
  * system enter the given sleep state and clean up after wakeup.
  */
+
+int suspend_state;
 static int enter_state(suspend_state_t state)
 {
 	int error;
@@ -277,6 +308,12 @@ static int enter_state(suspend_state_t state)
 
 	if (!mutex_trylock(&pm_mutex))
 		return -EBUSY;
+
+#ifdef CONFIG_SYSTEM_LOAD_ANALYZER
+	store_external_load_factor(SUSPEND_STATE, 1);
+#endif
+
+	suspend_state = 1;
 
 	printk(KERN_INFO "PM: Syncing filesystems ... ");
 	sys_sync();
@@ -299,8 +336,30 @@ static int enter_state(suspend_state_t state)
 	pr_debug("PM: Finishing wakeup.\n");
 	suspend_finish();
  Unlock:
+
+	suspend_state = 0;
+
+ #ifdef CONFIG_SYSTEM_LOAD_ANALYZER
+	if (error == 0)
+		store_external_load_factor(SUSPEND_STATE, 0);
+	else
+		store_external_load_factor(SUSPEND_STATE, -1);
+#endif
+
 	mutex_unlock(&pm_mutex);
 	return error;
+}
+
+static void pm_suspend_marker(char *annotation)
+{
+	struct timespec ts;
+	struct rtc_time tm;
+
+	getnstimeofday(&ts);
+	rtc_time_to_tm(ts.tv_sec, &tm);
+	pr_info("PM: suspend %s %d-%02d-%02d %02d:%02d:%02d.%09lu UTC\n",
+		annotation, tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+		tm.tm_hour, tm.tm_min, tm.tm_sec, ts.tv_nsec);
 }
 
 /**
@@ -314,16 +373,23 @@ int pm_suspend(suspend_state_t state)
 {
 	int error;
 
-	if (state <= PM_SUSPEND_ON || state >= PM_SUSPEND_MAX)
+	if (state <= PM_SUSPEND_ON || state >= PM_SUSPEND_MAX) {
+		pr_info("%s state error = %d\n", __func__, state);
 		return -EINVAL;
+	}
 
+	pm_suspend_marker("entry");
 	error = enter_state(state);
 	if (error) {
 		suspend_stats.fail++;
 		dpm_save_failed_errno(error);
 	} else {
 		suspend_stats.success++;
+#ifdef CONFIG_SYSTEM_LOAD_ANALYZER
+		store_external_load_factor(SUSPEND_COUNT, suspend_stats.success);
+#endif
 	}
+	pm_suspend_marker("exit");
 	return error;
 }
 EXPORT_SYMBOL(pm_suspend);

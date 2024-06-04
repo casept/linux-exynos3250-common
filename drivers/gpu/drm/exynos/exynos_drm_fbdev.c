@@ -34,6 +34,7 @@
 #include "exynos_drm_drv.h"
 #include "exynos_drm_fb.h"
 #include "exynos_drm_gem.h"
+#include "exynos_drm_fbdev.h"
 
 #define MAX_CONNECTOR		4
 #define PREFERRED_BPP		32
@@ -46,8 +47,38 @@ struct exynos_drm_fbdev {
 	struct exynos_drm_gem_obj	*exynos_gem_obj;
 };
 
+static int exynos_drm_fb_mmap(struct fb_info *info,
+			struct vm_area_struct *vma)
+{
+	struct drm_fb_helper *helper = info->par;
+	struct exynos_drm_fbdev *exynos_fbd = to_exynos_fbdev(helper);
+	struct exynos_drm_gem_obj *exynos_gem_obj = exynos_fbd->exynos_gem_obj;
+	struct exynos_drm_gem_buf *buffer = exynos_gem_obj->buffer;
+	unsigned long vm_size;
+	int ret;
+
+	DRM_DEBUG_KMS("%s\n", __func__);
+
+	vma->vm_flags |= VM_IO | VM_DONTEXPAND;
+
+	vm_size = vma->vm_end - vma->vm_start;
+
+	if (vm_size > buffer->size)
+		return -EINVAL;
+
+	ret = dma_mmap_attrs(helper->dev->dev, vma, buffer->pages,
+		buffer->dma_addr, buffer->size, &buffer->dma_attrs);
+	if (ret < 0) {
+		DRM_ERROR("failed to mmap.\n");
+		return ret;
+	}
+
+	return 0;
+}
+
 static struct fb_ops exynos_drm_fb_ops = {
 	.owner		= THIS_MODULE,
+	.fb_mmap        = exynos_drm_fb_mmap,
 	.fb_fillrect	= cfb_fillrect,
 	.fb_copyarea	= cfb_copyarea,
 	.fb_imageblit	= cfb_imageblit,
@@ -56,6 +87,24 @@ static struct fb_ops exynos_drm_fb_ops = {
 	.fb_blank	= drm_fb_helper_blank,
 	.fb_pan_display	= drm_fb_helper_pan_display,
 	.fb_setcmap	= drm_fb_helper_setcmap,
+};
+
+static struct exynos_drm_gem_obj __init *exynos_drm_fbdev_gem_create(
+				struct drm_device *dev, unsigned long size)
+{
+	/* 0 means to allocate physically continuous memory */
+	return exynos_drm_gem_create(dev, 0, size);
+}
+
+static void __exit exynos_drm_fbdev_gem_destroy(struct exynos_drm_gem_obj
+								*exynos_gem_obj)
+{
+	exynos_drm_gem_destroy(exynos_gem_obj);
+}
+
+struct exynos_drm_fbdev_ops exynos_drm_fbdev_gem_ops = {
+	.create		= exynos_drm_fbdev_gem_create,
+	.destroy	= __exit_p(exynos_drm_fbdev_gem_destroy),
 };
 
 static int exynos_drm_fbdev_update(struct drm_fb_helper *helper,
@@ -79,12 +128,16 @@ static int exynos_drm_fbdev_update(struct drm_fb_helper *helper,
 		return -EFAULT;
 	}
 
+	/* buffer count to framebuffer always is 1 at booting time. */
+	exynos_drm_fb_set_buf_cnt(fb, 1);
+
 	offset = fbi->var.xoffset * (fb->bits_per_pixel >> 3);
 	offset += fbi->var.yoffset * fb->pitches[0];
 
 	dev->mode_config.fb_base = (resource_size_t)buffer->dma_addr;
 	fbi->screen_base = buffer->kvaddr + offset;
-	fbi->fix.smem_start = (unsigned long)(buffer->dma_addr + offset);
+	fbi->fix.smem_start = (unsigned long)(sg_phys(buffer->sgt->sgl) +
+				offset);
 	fbi->screen_size = size;
 	fbi->fix.smem_len = size;
 
@@ -126,11 +179,10 @@ static int exynos_drm_fbdev_create(struct drm_fb_helper *helper,
 
 	size = mode_cmd.pitches[0] * mode_cmd.height;
 
-	/* 0 means to allocate physically continuous memory */
-	exynos_gem_obj = exynos_drm_gem_create(dev, 0, size);
+	exynos_gem_obj = exynos_drm_fbdev_gem_ops.create(dev, size);
 	if (IS_ERR(exynos_gem_obj)) {
 		ret = PTR_ERR(exynos_gem_obj);
-		goto out;
+		goto err_release_framebuffer;
 	}
 
 	exynos_fbdev->exynos_gem_obj = exynos_gem_obj;
@@ -140,7 +192,7 @@ static int exynos_drm_fbdev_create(struct drm_fb_helper *helper,
 	if (IS_ERR_OR_NULL(helper->fb)) {
 		DRM_ERROR("failed to create drm framebuffer.\n");
 		ret = PTR_ERR(helper->fb);
-		goto out;
+		goto err_destroy_gem;
 	}
 
 	helper->fbdev = fbi;
@@ -152,14 +204,24 @@ static int exynos_drm_fbdev_create(struct drm_fb_helper *helper,
 	ret = fb_alloc_cmap(&fbi->cmap, 256, 0);
 	if (ret) {
 		DRM_ERROR("failed to allocate cmap.\n");
-		goto out;
+		goto err_destroy_framebuffer;
 	}
 
 	ret = exynos_drm_fbdev_update(helper, helper->fb);
-	if (ret < 0) {
-		fb_dealloc_cmap(&fbi->cmap);
-		goto out;
-	}
+	if (ret < 0)
+		goto err_dealloc_cmap;
+
+	mutex_unlock(&dev->struct_mutex);
+	return ret;
+
+err_dealloc_cmap:
+	fb_dealloc_cmap(&fbi->cmap);
+err_destroy_framebuffer:
+	drm_framebuffer_cleanup(helper->fb);
+err_destroy_gem:
+	exynos_drm_gem_destroy(exynos_gem_obj);
+err_release_framebuffer:
+	framebuffer_release(fbi);
 
 /*
  * if failed, all resources allocated above would be released by
@@ -266,8 +328,8 @@ static void exynos_drm_fbdev_destroy(struct drm_device *dev,
 	/* release drm framebuffer and real buffer */
 	if (fb_helper->fb && fb_helper->fb->funcs) {
 		fb = fb_helper->fb;
-		if (fb && fb->funcs->destroy)
-			fb->funcs->destroy(fb);
+		if (fb)
+			drm_framebuffer_remove(fb);
 	}
 
 	/* release linux framebuffer */
@@ -300,7 +362,7 @@ void exynos_drm_fbdev_fini(struct drm_device *dev)
 	fbdev = to_exynos_fbdev(private->fb_helper);
 
 	if (fbdev->exynos_gem_obj)
-		exynos_drm_gem_destroy(fbdev->exynos_gem_obj);
+		exynos_drm_fbdev_gem_ops.destroy(fbdev->exynos_gem_obj);
 
 	exynos_drm_fbdev_destroy(dev, private->fb_helper);
 	kfree(fbdev);
@@ -313,6 +375,24 @@ void exynos_drm_fbdev_restore_mode(struct drm_device *dev)
 
 	if (!private || !private->fb_helper)
 		return;
+
+	/*
+	 * At the first time this function is called, fbdev is filled with logo
+	 * and after this line, FIMD will attach IOMMU, and this will make screen
+	 * blink. To avoid this, we need to make fbdev clear(looks black).
+	 * But fbdev uses the same physical address where u-boot drew logo,
+	 * and logo is disappeared during drm driver probing if fbdev is cleared
+	 * in fbdev creation time. So we make fbdev clear here.
+	 */
+	if (exynos_drm_fbdev_gem_ops.clear) {
+		struct exynos_drm_fbdev *fbdev;
+
+		fbdev = to_exynos_fbdev(private->fb_helper);
+
+		exynos_drm_fbdev_gem_ops.clear(fbdev->exynos_gem_obj);
+
+		exynos_drm_fbdev_gem_ops.clear = NULL;
+	}
 
 	drm_fb_helper_restore_fbdev_mode(private->fb_helper);
 }

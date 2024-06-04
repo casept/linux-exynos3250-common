@@ -580,4 +580,15 @@ config KEYBOARD_W90P910
 	  To compile this driver as a module, choose M here: the
 	  module will be called w90p910_keypad.
 
+config SENSORS_HALL
+	tristate "HALL"
+	help
+	  Say Y here to enable the HALL.
+
+config KEYBOARD_GPIO_SEC_PP_KEY
+        tristate "GPIO-SEC-PP-KEY"
+        help
+          Say Y here to enable the GPIO-SEC_PP_KEY.
+
+source "drivers/input/keyboard/cypress/Kconfig"
 endif

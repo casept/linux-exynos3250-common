@@ -10,6 +10,7 @@
 */
 
 #include <linux/rtc.h>
+#include <linux/time_history.h>
 
 /* IMPORTANT: the RTC only stores whole seconds. It is arbitrary
  * whether it stores the most close value or the value with partial
@@ -57,6 +58,7 @@ static int __init rtc_hctosys(void)
 	rtc_tm_to_time(&tm, &tv.tv_sec);
 
 	do_settimeofday(&tv);
+	time_history_marker_system_rtc(&tv, &tm);
 
 	dev_info(rtc->dev.parent,
 		"setting system clock to "

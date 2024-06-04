@@ -6,6 +6,13 @@
 #include <linux/vmalloc.h>
 #include <linux/reboot.h>
 
+#include <linux/time.h>
+#include <linux/sched.h>
+#include <linux/cpu.h>
+#if defined(CONFIG_SYSTEM_LOAD_ANALYZER)
+#include <linux/load_analyzer.h>
+#endif
+
 /*
  *	Notifier list for kernel code which wants to be called
  *	at shutdown. This is used to stop any idling DMA operations
@@ -90,7 +97,28 @@ static int __kprobes notifier_call_chain(struct notifier_block **nl,
 			continue;
 		}
 #endif
+
+#if defined(CONFIG_SLP_MINI_TRACER)
+{
+	if (((val == CPU_DOWN_PREPARE) || (val == CPU_DEAD)) && ((unsigned long long)
+				(cpu_clock(raw_smp_processor_id())/NSEC_PER_SEC) < 2)) {
+		char str[64] = {0,};
+		sprintf(str, "->%pF", nb->notifier_call);
+		kernel_mini_tracer(str, TIME_ON | FLUSH_CACHE);
+	}
+}
+#endif
+
 		ret = nb->notifier_call(nb, val, v);
+
+#if defined(CONFIG_SLP_MINI_TRACER)
+{
+	if (((val == CPU_DOWN_PREPARE) || (val == CPU_DEAD)) && ((unsigned long long)
+				(cpu_clock(raw_smp_processor_id())/NSEC_PER_SEC) < 2)) {
+		kernel_mini_tracer("[D]\n", TIME_ON | FLUSH_CACHE);
+	}
+}
+#endif
 
 		if (nr_calls)
 			(*nr_calls)++;

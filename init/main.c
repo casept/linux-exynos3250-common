@@ -6,7 +6,7 @@
  *  GK 2/5/95  -  Changed to support mounting root fs via NFS
  *  Added initrd & change_root: Werner Almesberger & Hans Lermen, Feb '96
  *  Moan early if gcc is old, avoiding bogus kernels - Paul Gortmaker, May '96
- *  Simplified starting of init:  Michael A. Griffith <grif@acm.org> 
+ *  Simplified starting of init:  Michael A. Griffith <grif@acm.org>
  */
 
 #include <linux/types.h>
@@ -78,6 +78,14 @@
 #ifdef CONFIG_X86_LOCAL_APIC
 #include <asm/smp.h>
 #endif
+
+#ifdef CONFIG_TIMA_RKP
+#include <asm/cp15.h>
+#endif
+#ifdef CONFIG_SEC_GPIO_DVS
+#include <linux/secgpio_dvs.h>
+#endif
+#include "../arch/arm/mach-exynos/board-universal3250.h"
 
 static int kernel_init(void *);
 
@@ -800,6 +808,16 @@ static void run_init_process(const char *init_filename)
  */
 static noinline int init_post(void)
 {
+	config_init_gpio_tables();
+	#ifdef CONFIG_SEC_GPIO_DVS
+	/********************************************************************************/
+	/*										*/
+	/*	Caution : This function must be located in this position		*/
+	/********************************************************************************/
+	gpio_dvs_check_initgpio();
+	#endif
+
+
 	/* need to finish all async __init code before freeing the memory */
 	async_synchronize_full();
 	free_initmem();
@@ -836,6 +854,13 @@ static noinline int init_post(void)
 	      "See Linux Documentation/init.txt for guidance.");
 }
 
+#ifdef CONFIG_TIMA_RKP_30
+#define PGT_BIT_ARRAY_LEN 0x40000  /* 2GB memory needs */
+
+unsigned long pgt_bit_array[PGT_BIT_ARRAY_LEN];
+
+EXPORT_SYMBOL(pgt_bit_array);
+#endif
 static int __init kernel_init(void * unused)
 {
 	/*
@@ -861,6 +886,14 @@ static int __init kernel_init(void * unused)
 
 	do_pre_smp_initcalls();
 	lockup_detector_init();
+
+#ifdef CONFIG_TIMA_RKP
+#ifdef CONFIG_TIMA_RKP_30
+	tima_send_cmd5((unsigned long)_stext, (unsigned long)init_mm.pgd, (unsigned long)__init_begin, (unsigned long)__init_end, (unsigned long)__pa(pgt_bit_array), 0xc);
+#else
+	tima_send_cmd4((unsigned long)_stext, (unsigned long)init_mm.pgd, (unsigned long)__init_begin, (unsigned long)__init_end, 0xc);
+#endif
+#endif
 
 	smp_init();
 	sched_init_smp();

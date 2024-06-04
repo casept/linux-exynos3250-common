@@ -339,4 +339,10 @@ config MOUSE_SYNAPTICS_USB
 	  To compile this driver as a module, choose M here: the
 	  module will be called synaptics_usb.
 
+config MOUSE_OFM_FINGER
+	tristate "Partron OFM"
+	depends on I2C
+	help
+	  Say Y here to support Partorn OFM(VD5376).
+
 endif

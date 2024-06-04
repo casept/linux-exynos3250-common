@@ -31,4 +31,13 @@
 struct drm_connector *exynos_drm_connector_create(struct drm_device *dev,
 						   struct drm_encoder *encoder);
 
+struct drm_encoder *exynos_drm_best_encoder(struct drm_connector *connector);
+
+void exynos_drm_display_power(struct drm_connector *connector, int mode);
+
+int exynos_drm_connector_set_partial_region(struct drm_connector *connector,
+					struct exynos_drm_partial_pos *pos);
+
+void exynos_drm_dpms_work(struct work_struct *work);
+int exynos_drm_control_dpms(struct drm_device *dev, void *data, struct drm_file *file);
 #endif

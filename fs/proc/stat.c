@@ -11,6 +11,10 @@
 #include <linux/irqnr.h>
 #include <asm/cputime.h>
 #include <linux/tick.h>
+#ifdef CONFIG_SLEEP_MONITOR
+#include <linux/suspend.h>
+#include <linux/power/sleep_monitor.h>
+#endif /* CONFIG_SLEEP_MONITOR */
 
 #ifndef arch_irq_stat_cpu
 #define arch_irq_stat_cpu(cpu) 0
@@ -216,9 +220,138 @@ static const struct file_operations proc_stat_operations = {
 	.release	= single_release,
 };
 
+#ifdef CONFIG_SLEEP_MONITOR
+struct proc_stat_cpu_info {
+	u64 user;
+	u64 nice;
+	u64 system;
+	u64 idle;
+	u32 util;
+};
+
+static struct proc_stat_cpu_info *sleep_mon_cpu_info;
+
+static int proc_stat_pm_notifier(struct notifier_block *nb,
+					unsigned long event, void *dummy)
+{
+	int i;
+	u32 cpu_util;
+	u64 user, nice, system, idle;
+	u64 total_user, total_nice, total_system, total_idle;
+
+	switch (event) {
+	case PM_SUSPEND_PREPARE:
+		total_user = total_nice = total_system = total_idle = 0;
+		for_each_possible_cpu(i) {
+
+			total_user += user = kcpustat_cpu(i).cpustat[CPUTIME_USER] - (sleep_mon_cpu_info + i)->user;
+			total_nice += nice = kcpustat_cpu(i).cpustat[CPUTIME_NICE] - (sleep_mon_cpu_info + i)->nice;
+			total_system += system = kcpustat_cpu(i).cpustat[CPUTIME_SYSTEM] - (sleep_mon_cpu_info + i)->system;
+			total_idle += idle = get_idle_time(i) - (sleep_mon_cpu_info + i)->idle;
+
+			cpu_util = (user + nice + system)*100;
+
+			if (user + nice + system + idle != 0)
+				do_div(cpu_util, (user + nice + system + idle));
+			(sleep_mon_cpu_info + i)->util = (u32)cpu_util;
+
+			pr_debug("%s:%d:%d:0x%llx:0x%llx:0x%llx:0x%llx:%d\n",
+						__func__, (int)event, i, user, nice, system, idle, (int)cpu_util);
+		}
+		break;
+	case PM_POST_SUSPEND:
+		for_each_possible_cpu(i) {
+			(sleep_mon_cpu_info + i)->user = kcpustat_cpu(i).cpustat[CPUTIME_USER];
+			(sleep_mon_cpu_info + i)->nice = kcpustat_cpu(i).cpustat[CPUTIME_NICE];
+			(sleep_mon_cpu_info + i)->system = kcpustat_cpu(i).cpustat[CPUTIME_SYSTEM];
+			(sleep_mon_cpu_info + i)->idle = get_idle_time(i);
+			(sleep_mon_cpu_info + i)->util = 0;
+
+			pr_debug("%s:%d:%d:0x%llx:0x%llx:0x%llx:0x%llx\n",
+						__func__, (int)event, i,
+						(sleep_mon_cpu_info + i)->user,
+						(sleep_mon_cpu_info + i)->nice,
+						(sleep_mon_cpu_info + i)->system,
+						(sleep_mon_cpu_info + i)->idle);
+		}
+		break;
+	default:
+		break;
+	}
+	return 0;
+}
+
+static struct notifier_block proc_stat_notifier_block = {
+	.notifier_call = proc_stat_pm_notifier,
+};
+
+static int proc_stat_sleep_monitor_read_cb(void *priv,
+							 unsigned int *raw_val, int check_level, int caller_type)
+{
+	int i;
+	u32 cpu_util = 0, total_cpu_util = 0;
+
+	for_each_possible_cpu(i) {
+		cpu_util = (sleep_mon_cpu_info + i)->util;
+
+		/* maximum granted core is 4 */
+		*raw_val |= ((cpu_util&0xff) << (i*8));
+
+		/* maximum granted core is 2 */
+		if (cpu_util < 25)
+			cpu_util = 0;
+		else if (cpu_util < 50)
+			cpu_util = 1;
+		else if (cpu_util < 75)
+			cpu_util = 2;
+		else
+			cpu_util = 3;
+		total_cpu_util |= (cpu_util << i*2);
+
+		pr_debug("%s:cpu%d:%d:0x%x:0x%x\n",
+			__func__, i, cpu_util, total_cpu_util, *raw_val);
+	}
+
+	return total_cpu_util;
+}
+
+static struct sleep_monitor_ops proc_stat_sleep_monitor_ops = {
+	.read_cb_func = proc_stat_sleep_monitor_read_cb,
+};
+#endif /* CONFIG_SLEEP_MONITOR */
+
 static int __init proc_stat_init(void)
 {
+#ifdef CONFIG_SLEEP_MONITOR
+	int ret;
+	int num_cpu;
+#endif /* CONFIG_SLEEP_MONITOR */
+
 	proc_create("stat", 0, NULL, &proc_stat_operations);
+
+#ifdef CONFIG_SLEEP_MONITOR
+	num_cpu = num_possible_cpus();
+	if ((sleep_mon_cpu_info = kzalloc(sizeof(struct proc_stat_cpu_info)*num_cpu, GFP_KERNEL)) == NULL)
+		goto fail_alloc;
+
+	ret = register_pm_notifier(&proc_stat_notifier_block);
+	if (ret)
+		goto fail_pm_register;
+
+	ret = sleep_monitor_register_ops(&sleep_mon_cpu_info,
+	   &proc_stat_sleep_monitor_ops,
+	   SLEEP_MONITOR_CPU_UTIL);
+	if (ret)
+		goto fail_slp_mon_register;
+
+	return 0;
+
+fail_pm_register:
+	kfree(sleep_mon_cpu_info);
+fail_alloc:
+fail_slp_mon_register:
+#endif /* CONFIG_SLEEP_MONITOR */
+
 	return 0;
 }
 module_init(proc_stat_init);

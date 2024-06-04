@@ -40,13 +40,28 @@
 
 /* FIFO memory AC characteristic register */
 #define EXYNOS_DSIM_PLLCTRL		0x4c	/* PLL control register */
+#if defined(CONFIG_ARCH_EXYNOS4)
 #define EXYNOS_DSIM_PLLTMR		0x50	/* PLL timer register */
+#elif defined(CONFIG_ARCH_EXYNOS5)
+#define EXYNOS_DSIM_PLLTMR		0x58	/* PLL timer register */
+#endif
 #define EXYNOS_DSIM_PHYACCHR		0x54	/* D-PHY AC characteristic register */
 #define EXYNOS_DSIM_PHYACCHR1		0x58	/* D-PHY AC characteristic register1 */
 
+/* PHY ctrl register */
+#define EXYNOS_DSIM_PHYCTRL	(0x5C)  /* D-PHY Master & Slave Analog block characteristics control register (B_DPHYCTL) */
+#define EXYNOS_DSIM_PHYCTRL1	(0x60)  /* D-PHY Master & Slave Analog block characteristics control register (M_DPHYCTL) */
+#define EXYNOS_DSIM_PHYTIMING	(0x64)  /* D-PHY Master global operating timing register */
+#define EXYNOS_DSIM_PHYTIMING1	(0x68)  /* D-PHY Master global operating timing register */
+#define EXYNOS_DSIM_PHYTIMING2	(0x6C)  /* D-PHY Master global operating timing register */
+/* Version register */
+#define EXYNOS_DSIM_VERSION	(0x70)  /* Specifies the DSIM version information */
+
 /* DSIM_STATUS */
 #define DSIM_STOP_STATE_DAT(x)		(((x) & 0xf) << 0)
+#define DSIM_ULPS_DAT_SHIFT(x)		((x) << 4)
 #define DSIM_STOP_STATE_CLK		(1 << 8)
+#define DSIM_ULPS_CLK			(1 << 9)
 #define DSIM_TX_READY_HS_CLK		(1 << 10)
 
 /* DSIM_SWRST */
@@ -79,6 +94,11 @@
 #define DSIM_NUM_OF_DATA_LANE(x)	((x) << DSIM_NUM_OF_DATALANE_SHIFT)
 
 /* EXYNOS_DSIM_ESCMODE */
+#define DSIM_TX_ULPS_CLK_EXIT		(1 << 0)
+#define DSIM_TX_ULPS_CLK		(1 << 1)
+#define DSIM_TX_ULPS_DATA_EXIT		(1 << 2)
+#define DSIM_TX_ULPS_DATA		(1 << 3)
+#define DSIM_TX_ULPS_MASK		(0xf << 0)
 #define DSIM_TX_LPDT_LP			(1 << 6)
 #define DSIM_CMD_LPDT_LP		(1 << 7)
 #define DSIM_FORCE_STOP_STATE_SHIFT(x)	((x) << 20)
@@ -138,6 +158,7 @@
 
 /* EXYNOS_DSIM_FIFOCTRL */
 #define SFR_HEADER_EMPTY		(1 << 22)
+#define SFR_PAYLOAD_EMPTY		(1 << 20)
 
 /* EXYNOS_DSIM_PHYACCHR */
 #define DSIM_AFC_CTL(x)			(((x) & 0x7) << 5)

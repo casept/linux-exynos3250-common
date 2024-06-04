@@ -27,8 +27,6 @@ void exynos_mipi_dsi_init_fifo_pointer(struct mipi_dsim_device *dsim,
 					unsigned int cfg);
 void exynos_mipi_dsi_set_phy_tunning(struct mipi_dsim_device *dsim,
 				unsigned int value);
-void exynos_mipi_dsi_set_phy_tunning(struct mipi_dsim_device *dsim,
-				unsigned int value);
 void exynos_mipi_dsi_set_main_stand_by(struct mipi_dsim_device *dsim,
 		unsigned int enable);
 void exynos_mipi_dsi_set_main_disp_resol(struct mipi_dsim_device *dsim,
@@ -87,7 +85,7 @@ void exynos_mipi_dsi_set_cpu_transfer_mode(struct mipi_dsim_device *dsim,
 void exynos_mipi_dsi_enable_hs_clock(struct mipi_dsim_device *dsim,
 				unsigned int enable);
 void exynos_mipi_dsi_dp_dn_swap(struct mipi_dsim_device *dsim,
-				unsigned int swap_en);
+	enum mipi_dsim_version e_version, unsigned int swap_en);
 void exynos_mipi_dsi_hs_zero_ctrl(struct mipi_dsim_device *dsim,
 				unsigned int hs_zero);
 void exynos_mipi_dsi_prep_ctrl(struct mipi_dsim_device *dsim, unsigned int prep);
@@ -108,5 +106,16 @@ void exynos_mipi_dsi_wr_tx_data(struct mipi_dsim_device *dsim,
 void exynos_mipi_dsi_rd_tx_header(struct mipi_dsim_device *dsim,
 		unsigned int data0, unsigned int data1);
 unsigned int exynos_mipi_dsi_rd_rx_fifo(struct mipi_dsim_device *dsim);
+
+void exynos_mipi_dsi_set_b_dphyctrl(struct mipi_dsim_device *dsim,
+	unsigned int ulpsexitctrl);
+void exynos_mipi_dsi_set_timing_register0(struct mipi_dsim_device *dsim,
+	unsigned int m_tlpxctl, unsigned int m_thsexitctl);
+void exynos_mipi_dsi_set_timing_register1(struct mipi_dsim_device *dsim,
+	unsigned int m_tclkprprctl, unsigned int m_tclkzeroctl,
+	unsigned int m_tclkpostctl, unsigned int m_tclktrailctl);
+void exynos_mipi_dsi_set_timing_register2(struct mipi_dsim_device *dsim,
+	unsigned int m_thsprprctl, unsigned int m_thszeroctl,
+	unsigned int m_thstrailctl);
 
 #endif /* _EXYNOS_MIPI_DSI_LOWLEVEL_H */

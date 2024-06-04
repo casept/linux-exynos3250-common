@@ -325,7 +325,11 @@ struct itimerval {
 
 /*
  * The various flags for setting POSIX.1b interval timers:
+ *
+ * We keep that in sync with the TFD_TIMER_ flags
  */
 #define TIMER_ABSTIME			0x01
+/* Reserved for TFD_ONLY flag		0x02 */
+#define TIMER_DEFERRABLE		0x04
 
 #endif

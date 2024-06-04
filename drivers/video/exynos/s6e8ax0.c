@@ -652,6 +652,37 @@ static int s6e8ax0_gamma_ctrl(struct s6e8ax0 *lcd, int gamma)
 	return 0;
 }
 
+static int s6e8aa0_early_set_power(struct lcd_device *ld, int power)
+{
+	struct s6e8ax0 *lcd = lcd_get_data(ld);
+	struct mipi_dsim_master_ops *ops = lcd_to_master_ops(lcd);
+	int ret = 0;
+
+	if (power != FB_BLANK_UNBLANK && power != FB_BLANK_POWERDOWN &&
+			power != FB_BLANK_NORMAL) {
+		dev_err(lcd->dev, "power value should be 0, 1 or 4.\n");
+		return -EINVAL;
+	}
+
+	if (lcd->power == power) {
+		dev_err(lcd->dev, "power mode is same as previous one.\n");
+		return -EINVAL;
+	}
+
+	if (ops->set_early_blank_mode) {
+		/* LCD power off */
+		if ((POWER_IS_OFF(power) && POWER_IS_ON(lcd->power))
+			|| (POWER_IS_ON(lcd->power) && POWER_IS_NRM(power))) {
+			ret = ops->set_early_blank_mode(lcd_to_master(lcd),
+							power);
+			if (!ret && lcd->power != power)
+				lcd->power = power;
+		}
+	}
+
+	return ret;
+}
+
 static int s6e8ax0_set_power(struct lcd_device *ld, int power)
 {
 	struct s6e8ax0 *lcd = lcd_get_data(ld);

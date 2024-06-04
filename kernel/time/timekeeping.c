@@ -20,6 +20,7 @@
 #include <linux/time.h>
 #include <linux/tick.h>
 #include <linux/stop_machine.h>
+#include <linux/time_history.h>
 
 /* Structure holding internal timekeeping values. */
 struct timekeeper {
@@ -382,8 +383,11 @@ EXPORT_SYMBOL(do_gettimeofday);
  */
 int do_settimeofday(const struct timespec *tv)
 {
-	struct timespec ts_delta;
+	struct timespec ts_delta, xt;
 	unsigned long flags;
+
+	printk("%s: time is changed comm=%s sec=%ld\n",
+		__func__, current->comm, tv->tv_sec);
 
 	if (!timespec_valid_strict(tv))
 		return -EINVAL;
@@ -392,6 +396,7 @@ int do_settimeofday(const struct timespec *tv)
 
 	timekeeping_forward_now();
 
+	xt = timekeeper.xtime;
 	ts_delta.tv_sec = tv->tv_sec - timekeeper.xtime.tv_sec;
 	ts_delta.tv_nsec = tv->tv_nsec - timekeeper.xtime.tv_nsec;
 	timekeeper.wall_to_monotonic =
@@ -405,6 +410,7 @@ int do_settimeofday(const struct timespec *tv)
 	/* signal hrtimers about time change */
 	clock_was_set();
 
+	time_history_time_set(&xt, tv);
 	return 0;
 }
 
@@ -759,7 +765,6 @@ static int timekeeping_suspend(void)
 	static struct timespec	old_delta;
 
 	read_persistent_clock(&timekeeping_suspend_time);
-
 	write_seqlock_irqsave(&timekeeper.lock, flags);
 	timekeeping_forward_now();
 	timekeeping_suspended = 1;
@@ -1193,7 +1198,7 @@ void get_monotonic_boottime(struct timespec *ts)
 	} while (read_seqretry(&timekeeper.lock, seq));
 
 	set_normalized_timespec(ts, ts->tv_sec + tomono.tv_sec + sleep.tv_sec,
-			ts->tv_nsec + tomono.tv_nsec + sleep.tv_nsec + nsecs);
+		(s64)ts->tv_nsec + tomono.tv_nsec + sleep.tv_nsec + nsecs);
 }
 EXPORT_SYMBOL_GPL(get_monotonic_boottime);
 

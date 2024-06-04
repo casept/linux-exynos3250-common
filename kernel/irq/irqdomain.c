@@ -410,7 +410,7 @@ unsigned int irq_create_of_mapping(struct device_node *controller,
 			return intspec[0];
 #endif
 		printk(KERN_WARNING "irq: no irq domain found for %s !\n",
-		       controller->full_name);
+		      controller ? controller->full_name : "NULL");
 		return 0;
 	}
 

@@ -45,6 +45,7 @@
 #include <linux/fs.h>
 #include <linux/seq_file.h>
 #include <linux/vmalloc.h>
+#include <linux/vmpressure.h>
 #include <linux/mm_inline.h>
 #include <linux/page_cgroup.h>
 #include <linux/cpu.h>
@@ -228,6 +229,9 @@ struct mem_cgroup {
 	 */
 	struct res_counter res;
 
+	/* vmpressure notifications */
+	struct vmpressure vmpressure;
+
 	union {
 		/*
 		 * the counter to account for mem+swap usage.
@@ -262,6 +266,7 @@ struct mem_cgroup {
 	atomic_t	numainfo_events;
 	atomic_t	numainfo_updating;
 #endif
+
 	/*
 	 * Should the accounting and control be hierarchical, per subtree?
 	 */
@@ -317,6 +322,12 @@ struct mem_cgroup {
 	struct tcp_memcontrol tcp_mem;
 #endif
 };
+
+static inline
+struct mem_cgroup *mem_cgroup_from_css(struct cgroup_subsys_state *s)
+{
+       return container_of(s, struct mem_cgroup, css);
+}
 
 /* Stuffs for move charges at task migration. */
 /*
@@ -977,6 +988,24 @@ void mem_cgroup_iter_break(struct mem_cgroup *root,
 	for (iter = mem_cgroup_iter(NULL, NULL, NULL);	\
 	     iter != NULL;				\
 	     iter = mem_cgroup_iter(NULL, iter, NULL))
+
+/* Some nice accessors for the vmpressure. */
+struct vmpressure *memcg_to_vmpressure(struct mem_cgroup *memcg)
+{
+	if (!memcg)
+		memcg = root_mem_cgroup;
+	return &memcg->vmpressure;
+}
+
+struct cgroup_subsys_state *vmpressure_to_css(struct vmpressure *vmpr)
+{
+	return &container_of(vmpr, struct mem_cgroup, vmpressure)->css;
+}
+
+struct vmpressure *css_to_vmpressure(struct cgroup_subsys_state *css)
+{
+	return &mem_cgroup_from_css(css)->vmpressure;
+}
 
 static inline bool mem_cgroup_is_root(struct mem_cgroup *memcg)
 {
@@ -3807,6 +3836,30 @@ int mem_cgroup_force_empty_write(struct cgroup *cont, unsigned int event)
 	return mem_cgroup_force_empty(mem_cgroup_from_cont(cont), true);
 }
 
+#ifdef CONFIG_CGROUP_MEM_RES_CTLR_SWAP
+static int mem_cgroup_force_reclaim(struct cgroup *cont, struct cftype *cft, u64 val)
+{
+
+	struct mem_cgroup *memcg = mem_cgroup_from_cont(cont);
+	unsigned long nr_to_reclaim = val;
+	unsigned long total = 0;
+	int loop;
+
+	for (loop = 0; loop < MEM_CGROUP_MAX_RECLAIM_LOOPS; loop++) {
+		total += try_to_free_mem_cgroup_pages(memcg, GFP_KERNEL, false);
+
+		/*
+		 * If nothing was reclaimed after two attempts, there
+		 * may be no reclaimable pages in this hierarchy.
+		 * If more than nr_to_reclaim pages were already reclaimed,
+		 * finish force reclaim.
+		 */
+		if (loop && (!total || total > nr_to_reclaim))
+			break;
+	}
+	return total;
+}
+#endif
 
 static u64 mem_cgroup_hierarchy_read(struct cgroup *cont, struct cftype *cft)
 {
@@ -4700,6 +4753,12 @@ static struct cftype mem_cgroup_files[] = {
 		.name = "force_empty",
 		.trigger = mem_cgroup_force_empty_write,
 	},
+#ifdef CONFIG_CGROUP_MEM_RES_CTLR_SWAP
+	{
+		.name = "force_reclaim",
+		.write_u64 = mem_cgroup_force_reclaim,
+	},
+#endif
 	{
 		.name = "use_hierarchy",
 		.write_u64 = mem_cgroup_hierarchy_write,
@@ -4722,6 +4781,11 @@ static struct cftype mem_cgroup_files[] = {
 		.register_event = mem_cgroup_oom_register_event,
 		.unregister_event = mem_cgroup_oom_unregister_event,
 		.private = MEMFILE_PRIVATE(_OOM_TYPE, OOM_CONTROL),
+	},
+	{
+		.name = "pressure_level",
+		.register_event = vmpressure_register_event,
+		.unregister_event = vmpressure_unregister_event,
 	},
 #ifdef CONFIG_NUMA
 	{
@@ -5025,6 +5089,7 @@ mem_cgroup_create(struct cgroup *cont)
 	memcg->move_charge_at_immigrate = 0;
 	mutex_init(&memcg->thresholds_lock);
 	spin_lock_init(&memcg->move_lock);
+	vmpressure_init(&memcg->vmpressure);
 	return &memcg->css;
 free_out:
 	__mem_cgroup_free(memcg);

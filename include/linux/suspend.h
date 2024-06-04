@@ -356,8 +356,14 @@ extern int unregister_pm_notifier(struct notifier_block *nb);
 extern bool events_check_enabled;
 
 extern bool pm_wakeup_pending(void);
-extern bool pm_get_wakeup_count(unsigned int *count);
+#ifdef CONFIG_PM_SLEEP_HISTORY
+extern bool pm_get_last_wakeup_sources(struct wakeup_source **ws_array,  int ws_count);
+extern bool pm_get_last_wakeup_source(struct wakeup_source **last_ws);
+extern void pm_del_prevent_sleep_time(void);
+#endif
+extern bool pm_get_wakeup_count(unsigned int *count, bool block);
 extern bool pm_save_wakeup_count(unsigned int count);
+extern void pm_wakep_autosleep_enabled(bool set);
 
 static inline void lock_system_sleep(void)
 {
@@ -406,6 +412,17 @@ static inline void lock_system_sleep(void) {}
 static inline void unlock_system_sleep(void) {}
 
 #endif /* !CONFIG_PM_SLEEP */
+
+#ifdef CONFIG_PM_AUTOSLEEP
+
+/* kernel/power/autosleep.c */
+void queue_up_suspend_work(void);
+
+#else /* !CONFIG_PM_AUTOSLEEP */
+
+static inline void queue_up_suspend_work(void) {}
+
+#endif /* !CONFIG_PM_AUTOSLEEP */
 
 #ifdef CONFIG_ARCH_SAVE_PAGE_KEYS
 /*

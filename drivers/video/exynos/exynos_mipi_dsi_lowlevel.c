@@ -96,11 +96,7 @@ void exynos_mipi_dsi_init_fifo_pointer(struct mipi_dsim_device *dsim,
 	unsigned int reg;
 
 	reg = readl(dsim->reg_base + EXYNOS_DSIM_FIFOCTRL);
-
-	writel(reg & ~(cfg), dsim->reg_base + EXYNOS_DSIM_FIFOCTRL);
-	mdelay(10);
 	reg |= cfg;
-
 	writel(reg, dsim->reg_base + EXYNOS_DSIM_FIFOCTRL);
 }
 
@@ -340,7 +336,9 @@ void exynos_mipi_dsi_pll_freq(struct mipi_dsim_device *dsim,
 void exynos_mipi_dsi_pll_stable_time(struct mipi_dsim_device *dsim,
 	unsigned int lock_time)
 {
+#if defined(CONFIG_ARCH_EXYNOS4) || defined (CONFIG_ARCH_EXYNOS5)
 	writel(lock_time, dsim->reg_base + EXYNOS_DSIM_PLLTMR);
+#endif
 }
 
 void exynos_mipi_dsi_enable_pll(struct mipi_dsim_device *dsim, unsigned int enable)
@@ -428,6 +426,8 @@ unsigned int exynos_mipi_dsi_is_lane_state(struct mipi_dsim_device *dsim)
 			 (reg & DSIM_TX_READY_HS_CLK)))
 		return 1;
 
+	dev_info(dsim->dev, "DSI Master status is [0x%x].\n", reg);
+
 	return 0;
 }
 
@@ -502,14 +502,27 @@ void exynos_mipi_dsi_enable_hs_clock(struct mipi_dsim_device *dsim,
 }
 
 void exynos_mipi_dsi_dp_dn_swap(struct mipi_dsim_device *dsim,
-		unsigned int swap_en)
+	enum mipi_dsim_version e_version, unsigned int swap_en)
 {
-	unsigned int reg = readl(dsim->reg_base + EXYNOS_DSIM_PHYACCHR1);
+	unsigned int reg;
 
-	reg &= ~(0x3 << 0);
-	reg |= (swap_en & 0x3) << 0;
-
-	writel(reg, dsim->reg_base + EXYNOS_DSIM_PHYACCHR1);
+	switch (e_version) {
+	case DSIM_VER_1_33:
+		reg = readl(dsim->reg_base + EXYNOS_DSIM_PHYACCHR1);
+		reg &= ~(0x3 << 0);
+		reg |= (swap_en & 0x3) << 0;
+		writel(reg, dsim->reg_base + EXYNOS_DSIM_PHYACCHR1);
+		break;
+	case DSIM_VER_1_34:
+		reg = readl(dsim->reg_base + EXYNOS_DSIM_PLLCTRL);
+		reg &= ~(0x3 << 24);
+		reg |= (swap_en & 0x3) << 24;
+		writel(reg, dsim->reg_base + EXYNOS_DSIM_PLLCTRL);
+		break;
+	default:
+		/* not supported */
+		break;
+	}
 }
 
 void exynos_mipi_dsi_hs_zero_ctrl(struct mipi_dsim_device *dsim,
@@ -615,4 +628,36 @@ void exynos_mipi_dsi_wr_tx_data(struct mipi_dsim_device *dsim,
 		unsigned int tx_data)
 {
 	writel(tx_data, dsim->reg_base + EXYNOS_DSIM_PAYLOAD);
+}
+
+void exynos_mipi_dsi_set_b_dphyctrl(struct mipi_dsim_device *dsim,
+	unsigned int ulpsexitctrl)
+{
+	writel((ulpsexitctrl & 0x1FF), dsim->reg_base + EXYNOS_DSIM_PHYCTRL);
+}
+
+void exynos_mipi_dsi_set_timing_register0(struct mipi_dsim_device *dsim,
+	unsigned int m_tlpxctl, unsigned int m_thsexitctl)
+{
+	unsigned int reg = 0;
+	reg = (m_tlpxctl << 8) | (m_thsexitctl << 0);
+	writel(reg, dsim->reg_base + EXYNOS_DSIM_PHYTIMING);
+}
+
+void exynos_mipi_dsi_set_timing_register1(struct mipi_dsim_device *dsim,
+	unsigned int m_tclkprprctl, unsigned int m_tclkzeroctl,
+	unsigned int m_tclkpostctl, unsigned int m_tclktrailctl)
+{
+	unsigned int reg = (m_tclkprprctl << 24) | (m_tclkzeroctl << 16) |
+				(m_tclkpostctl << 8) | (m_tclktrailctl << 0);
+	writel(reg, dsim->reg_base + EXYNOS_DSIM_PHYTIMING1);
+}
+
+void exynos_mipi_dsi_set_timing_register2(struct mipi_dsim_device *dsim,
+	unsigned int m_thsprprctl, unsigned int m_thszeroctl,
+	unsigned int m_thstrailctl)
+{
+	unsigned int reg = 0;
+	reg = (m_thsprprctl << 16) | (m_thszeroctl << 8) | (m_thstrailctl << 0);
+	writel(reg, dsim->reg_base + EXYNOS_DSIM_PHYTIMING2);
 }

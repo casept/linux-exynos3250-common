@@ -16,6 +16,18 @@
 #include <linux/mutex.h>
 #include <linux/gfp.h>
 #include <linux/suspend.h>
+#include <mach/sec_debug.h>
+#include <linux/pm_qos.h>
+#include <linux/cpuidle.h>
+#include <linux/kernel.h>
+
+#ifdef CONFIG_ARM_EXYNOS_MP_CPUFREQ
+#include <mach/cpufreq.h>
+#endif
+
+#if defined(CONFIG_SYSTEM_LOAD_ANALYZER)
+#include <linux/load_analyzer.h>
+#endif
 
 #ifdef CONFIG_SMP
 /* Serializes the updates to cpu_online_mask, cpu_present_mask */
@@ -124,6 +136,27 @@ static void cpu_hotplug_done(void)
 	mutex_unlock(&cpu_hotplug.lock);
 }
 
+/*
+ * Wait for currently running CPU hotplug operations to complete (if any) and
+ * disable future CPU hotplug (from sysfs). The 'cpu_add_remove_lock' protects
+ * the 'cpu_hotplug_disabled' flag. The same lock is also acquired by the
+ * hotplug path before performing hotplug operations. So acquiring that lock
+ * guarantees mutual exclusion from any currently running hotplug operations.
+ */
+void cpu_hotplug_disable(void)
+{
+	cpu_maps_update_begin();
+	cpu_hotplug_disabled = 1;
+	cpu_maps_update_done();
+}
+
+void cpu_hotplug_enable(void)
+{
+	cpu_maps_update_begin();
+	cpu_hotplug_disabled = 0;
+	cpu_maps_update_done();
+}
+
 #else /* #if CONFIG_HOTPLUG_CPU */
 static void cpu_hotplug_begin(void) {}
 static void cpu_hotplug_done(void) {}
@@ -224,7 +257,23 @@ static int __ref _cpu_down(unsigned int cpu, int tasks_frozen)
 	if (!cpu_online(cpu))
 		return -EINVAL;
 
+#if defined(CONFIG_SLP_MINI_TRACER)
+{
+	char str[64] = {0,};
+	sprintf(str, "[CPU- ");
+	kernel_mini_tracer(str, TIME_ON | FLUSH_CACHE);
+}
+#endif
+
 	cpu_hotplug_begin();
+
+#if defined(CONFIG_SLP_MINI_TRACER)
+{
+	char str[64] = {0,};
+	sprintf(str, "0");
+	kernel_mini_tracer(str, TIME_ON | FLUSH_CACHE);
+}
+#endif
 
 	err = __cpu_notify(CPU_DOWN_PREPARE | mod, hcpu, -1, &nr_calls);
 	if (err) {
@@ -235,6 +284,14 @@ static int __ref _cpu_down(unsigned int cpu, int tasks_frozen)
 		goto out_release;
 	}
 
+#if defined(CONFIG_SLP_MINI_TRACER)
+{
+	char str[64] = {0,};
+	sprintf(str, "1");
+	kernel_mini_tracer(str, TIME_ON | FLUSH_CACHE);
+}
+#endif
+
 	err = __stop_machine(take_cpu_down, &tcd_param, cpumask_of(cpu));
 	if (err) {
 		/* CPU didn't die: tell everyone.  Can't complain. */
@@ -243,6 +300,14 @@ static int __ref _cpu_down(unsigned int cpu, int tasks_frozen)
 		goto out_release;
 	}
 	BUG_ON(cpu_online(cpu));
+
+#if defined(CONFIG_SLP_MINI_TRACER)
+{
+	char str[64] = {0,};
+	sprintf(str, "2");
+	kernel_mini_tracer(str, TIME_ON | FLUSH_CACHE);
+}
+#endif
 
 	/*
 	 * The migration_call() CPU_DYING callback will have removed all
@@ -254,27 +319,83 @@ static int __ref _cpu_down(unsigned int cpu, int tasks_frozen)
 	while (!idle_cpu(cpu))
 		cpu_relax();
 
+	cpuidle_w_after_oneshot_log_en();
+
+#if defined(CONFIG_SLP_MINI_TRACER)
+{
+	char str[64] = {0,};
+	sprintf(str, "3");
+	kernel_mini_tracer(str, TIME_ON | FLUSH_CACHE);
+}
+#endif
+
 	/* This actually kills the CPU. */
 	__cpu_die(cpu);
+
+#if defined(CONFIG_SLP_MINI_TRACER)
+{
+	char str[64] = {0,};
+	sprintf(str, "4");
+	kernel_mini_tracer(str, TIME_ON | FLUSH_CACHE);
+}
+#endif
 
 	/* CPU is completely dead: tell everyone.  Too late to complain. */
 	cpu_notify_nofail(CPU_DEAD | mod, hcpu);
 
+#if defined(CONFIG_SLP_MINI_TRACER)
+{
+	char str[64] = {0,};
+	sprintf(str, "5");
+	kernel_mini_tracer(str, TIME_ON | FLUSH_CACHE);
+}
+#endif
+
 	check_for_tasks(cpu);
+
+#if defined(CONFIG_SLP_MINI_TRACER)
+{
+	char str[64] = {0,};
+	sprintf(str, "6");
+	kernel_mini_tracer(str, TIME_ON | FLUSH_CACHE);
+}
+#endif
 
 out_release:
 	cpu_hotplug_done();
 	if (!err)
 		cpu_notify_nofail(CPU_POST_DEAD | mod, hcpu);
+
+#if defined(CONFIG_SLP_MINI_TRACER)
+{
+	char str[64] = {0,};
+	sprintf(str, "7]\n");
+	kernel_mini_tracer(str, TIME_ON | FLUSH_CACHE);
+}
+#endif
+
 	return err;
 }
 
 int __ref cpu_down(unsigned int cpu)
 {
-	int err;
+	int err, min_cpu_online = 0;
+	min_cpu_online = min(pm_qos_request(PM_QOS_CPU_ONLINE_MIN)
+							, pm_qos_request(PM_QOS_CPU_ONLINE_MAX));
+
+	if (num_online_cpus() <= min_cpu_online)
+		return 0;
+
+#if defined(CONFIG_SLP_MINI_TRACER)
+{
+	char str[64] = {0,};
+	sprintf(str, "[CPUDOWN] ++\n");
+	kernel_mini_tracer(str, TIME_ON | FLUSH_CACHE);
+}
+#endif
 
 	cpu_maps_update_begin();
-
+	sec_debug_task_log_msg(cpu, "cpudown+");
 	if (cpu_hotplug_disabled) {
 		err = -EBUSY;
 		goto out;
@@ -283,7 +404,18 @@ int __ref cpu_down(unsigned int cpu)
 	err = _cpu_down(cpu, 0);
 
 out:
+	pr_info("_cpu_down ret=%d\n", err);
+	sec_debug_task_log_msg(cpu, "cpudown-");
 	cpu_maps_update_done();
+
+#if defined(CONFIG_SLP_MINI_TRACER)
+{
+	char str[64] = {0,};
+	sprintf(str, "[CPUDOWN] --\n");
+	kernel_mini_tracer(str, TIME_ON | FLUSH_CACHE);
+}
+#endif
+
 	return err;
 }
 EXPORT_SYMBOL(cpu_down);
@@ -300,6 +432,7 @@ static int __cpuinit _cpu_up(unsigned int cpu, int tasks_frozen)
 		return -EINVAL;
 
 	cpu_hotplug_begin();
+	sec_debug_task_log_msg(cpu, "cpuup+");
 	ret = __cpu_notify(CPU_UP_PREPARE | mod, hcpu, -1, &nr_calls);
 	if (ret) {
 		nr_calls--;
@@ -320,6 +453,7 @@ static int __cpuinit _cpu_up(unsigned int cpu, int tasks_frozen)
 out_notify:
 	if (ret != 0)
 		__cpu_notify(CPU_UP_CANCELED | mod, hcpu, nr_calls, NULL);
+	sec_debug_task_log_msg(cpu, "cpuup-");
 	cpu_hotplug_done();
 
 	return ret;
@@ -333,6 +467,9 @@ int __cpuinit cpu_up(unsigned int cpu)
 	int nid;
 	pg_data_t	*pgdat;
 #endif
+
+	if (num_online_cpus() >= pm_qos_request(PM_QOS_CPU_ONLINE_MAX))
+		return 0;
 
 	if (!cpu_possible(cpu)) {
 		printk(KERN_ERR "can't online cpu %d because it is not "
@@ -395,6 +532,16 @@ void __weak arch_disable_nonboot_cpus_end(void)
 int disable_nonboot_cpus(void)
 {
 	int cpu, first_cpu, error = 0;
+#ifdef CONFIG_ARM_EXYNOS_MP_CPUFREQ
+	int lated_cpu;
+#endif
+
+#ifdef CONFIG_ARM_EXYNOS_MP_CPUFREQ
+	if (exynos_boot_cluster == CA7)
+		lated_cpu = NR_CA7;
+	else
+		lated_cpu = NR_CA15;
+#endif
 
 	cpu_maps_update_begin();
 	first_cpu = cpumask_first(cpu_online_mask);
@@ -407,7 +554,11 @@ int disable_nonboot_cpus(void)
 
 	printk("Disabling non-boot CPUs ...\n");
 	for_each_online_cpu(cpu) {
+#if defined(CONFIG_ARM_EXYNOS_MP_CPUFREQ)
+		if (cpu == first_cpu || cpu == lated_cpu)
+#else
 		if (cpu == first_cpu)
+#endif
 			continue;
 		error = _cpu_down(cpu, 1);
 		if (!error)
@@ -418,6 +569,17 @@ int disable_nonboot_cpus(void)
 			break;
 		}
 	}
+
+#ifdef CONFIG_ARM_EXYNOS_MP_CPUFREQ
+	if (num_online_cpus() > 1) {
+		error = _cpu_down(lated_cpu, 1);
+		if (!error)
+			cpumask_set_cpu(lated_cpu, frozen_cpus);
+		else
+			printk(KERN_ERR "Error taking CPU%d down: %d\n",
+				lated_cpu, error);
+	}
+#endif
 
 	arch_disable_nonboot_cpus_end();
 
@@ -479,36 +641,6 @@ static int __init alloc_frozen_cpus(void)
 core_initcall(alloc_frozen_cpus);
 
 /*
- * Prevent regular CPU hotplug from racing with the freezer, by disabling CPU
- * hotplug when tasks are about to be frozen. Also, don't allow the freezer
- * to continue until any currently running CPU hotplug operation gets
- * completed.
- * To modify the 'cpu_hotplug_disabled' flag, we need to acquire the
- * 'cpu_add_remove_lock'. And this same lock is also taken by the regular
- * CPU hotplug path and released only after it is complete. Thus, we
- * (and hence the freezer) will block here until any currently running CPU
- * hotplug operation gets completed.
- */
-void cpu_hotplug_disable_before_freeze(void)
-{
-	cpu_maps_update_begin();
-	cpu_hotplug_disabled = 1;
-	cpu_maps_update_done();
-}
-
-
-/*
- * When tasks have been thawed, re-enable regular CPU hotplug (which had been
- * disabled while beginning to freeze tasks).
- */
-void cpu_hotplug_enable_after_thaw(void)
-{
-	cpu_maps_update_begin();
-	cpu_hotplug_disabled = 0;
-	cpu_maps_update_done();
-}
-
-/*
  * When callbacks for CPU hotplug notifications are being executed, we must
  * ensure that the state of the system with respect to the tasks being frozen
  * or not, as reported by the notification, remains unchanged *throughout the
@@ -527,12 +659,12 @@ cpu_hotplug_pm_callback(struct notifier_block *nb,
 
 	case PM_SUSPEND_PREPARE:
 	case PM_HIBERNATION_PREPARE:
-		cpu_hotplug_disable_before_freeze();
+		cpu_hotplug_disable();
 		break;
 
 	case PM_POST_SUSPEND:
 	case PM_POST_HIBERNATION:
-		cpu_hotplug_enable_after_thaw();
+		cpu_hotplug_enable();
 		break;
 
 	default:
@@ -668,3 +800,23 @@ void init_cpu_online(const struct cpumask *src)
 {
 	cpumask_copy(to_cpumask(cpu_online_bits), src);
 }
+
+static ATOMIC_NOTIFIER_HEAD(idle_notifier);
+
+void idle_notifier_register(struct notifier_block *n)
+{
+	atomic_notifier_chain_register(&idle_notifier, n);
+}
+EXPORT_SYMBOL_GPL(idle_notifier_register);
+
+void idle_notifier_unregister(struct notifier_block *n)
+{
+	atomic_notifier_chain_unregister(&idle_notifier, n);
+}
+EXPORT_SYMBOL_GPL(idle_notifier_unregister);
+
+void idle_notifier_call_chain(unsigned long val)
+{
+	atomic_notifier_call_chain(&idle_notifier, val, NULL);
+}
+EXPORT_SYMBOL_GPL(idle_notifier_call_chain);

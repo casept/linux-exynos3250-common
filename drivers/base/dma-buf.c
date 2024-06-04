@@ -24,11 +24,13 @@
 
 #include <linux/fs.h>
 #include <linux/slab.h>
+#include <linux/uaccess.h>
+#include <linux/sched.h>
 #include <linux/dma-buf.h>
 #include <linux/anon_inodes.h>
 #include <linux/export.h>
-
-static inline int is_dma_buf_file(struct file *);
+#include <linux/poll.h>
+#include <linux/dmabuf-sync.h>
 
 static int dma_buf_release(struct inode *inode, struct file *file)
 {
@@ -39,19 +41,284 @@ static int dma_buf_release(struct inode *inode, struct file *file)
 
 	dmabuf = file->private_data;
 
+	BUG_ON(dmabuf->vmapping_counter);
+
 	dmabuf->ops->release(dmabuf);
+
+	dmabuf_sync_reservation_fini(dmabuf);
 	kfree(dmabuf);
 	return 0;
 }
 
+static int dma_buf_mmap_internal(struct file *file, struct vm_area_struct *vma)
+{
+	struct dma_buf *dmabuf;
+
+	if (!is_dma_buf_file(file))
+		return -EINVAL;
+
+	dmabuf = file->private_data;
+
+	/* check for overflowing the buffer's size */
+	if (vma->vm_pgoff + ((vma->vm_end - vma->vm_start) >> PAGE_SHIFT) >
+	    dmabuf->size >> PAGE_SHIFT)
+		return -EINVAL;
+
+	return dmabuf->ops->mmap(dmabuf, vma);
+}
+
+static int dma_buf_get_info(struct dma_buf *dmabuf, struct dma_buf_info *info,
+				struct file *filp)
+{
+	info->fence_supported = 0;
+	info->size = dmabuf->size;
+
+	return 0;
+}
+
+static int dma_buf_get_fence(struct dma_buf *dmabuf, struct dma_buf_fence *df,
+				struct file *filp)
+{
+	struct dmabuf_sync *sync;
+	int ret;
+
+	if (WARN_ON(df->ctx))
+		return -EBUSY;
+
+	/* Requested by user only in case of 3D GPU. */
+	sync = dmabuf_sync_init("3D", NULL, NULL);
+	if (IS_ERR(sync)) {
+		WARN_ON(1);
+		goto err_free;
+	}
+
+	ret = dmabuf_sync_get(sync, dmabuf, df->type);
+	if (ret < 0) {
+		WARN_ON(1);
+		dmabuf_sync_fini(sync);
+		goto err_free;
+	}
+
+	ret = dmabuf_sync_lock(sync);
+	if (ret < 0) {
+		WARN_ON(1);
+		dmabuf_sync_put(sync, dmabuf);
+		dmabuf_sync_fini(sync);
+		goto err_free;
+	}
+
+	df->ctx = (unsigned long)sync;
+
+	return 0;
+
+err_free:
+	df->ctx = 0;
+	return ret;
+}
+
+static int dma_buf_put_fence(struct dma_buf *dmabuf, struct dma_buf_fence *df,
+				struct file *filp)
+{
+	struct dmabuf_sync *sync;
+	int ret;
+
+	if (WARN_ON(!df->ctx))
+		return -EFAULT;
+
+	sync = (struct dmabuf_sync *)df->ctx;
+
+	ret = dmabuf_sync_unlock(sync);
+	if (WARN_ON(ret)) {
+		/* TODO */
+		return ret;
+	}
+
+	dmabuf_sync_put(sync, dmabuf);
+	dmabuf_sync_fini(sync);
+
+	df->ctx = 0;
+
+	return 0;
+}
+
+static long dma_buf_ioctl(struct file *filp, unsigned int cmd,
+				unsigned long arg)
+{
+	struct dma_buf *dmabuf;
+	struct dma_buf_info info;
+	struct dma_buf_fence df;
+	int ret = 0;
+
+	if (!is_dma_buf_file(filp))
+		return -EINVAL;
+
+	dmabuf = filp->private_data;
+	if (!dmabuf)
+		return -EFAULT;
+
+	switch (cmd) {
+	case DMABUF_IOCTL_GET_INFO:
+		if (copy_from_user(&info, (struct dma_buf_info *)arg,
+					sizeof(info))) {
+			ret = -EFAULT;
+			break;
+		}
+
+		ret = dma_buf_get_info(dmabuf, &info, filp);
+		if (ret < 0)
+			break;
+
+		if (copy_to_user((struct dma_buf_info *)arg,
+					&info, sizeof(info))) {
+			ret = -EFAULT;
+			break;
+		}
+
+		break;
+
+	case DMABUF_IOCTL_GET_FENCE:
+		if (!dmabuf->sync) {
+			ret = -EPERM;
+			break;
+		}
+
+		if (copy_from_user(&df, (struct dma_buf_fence *)arg,
+					sizeof(df))) {
+			ret = -EFAULT;
+			break;
+		}
+
+		ret = dma_buf_get_fence(dmabuf, &df, filp);
+		if (ret < 0)
+			break;
+
+		if (copy_to_user((struct dma_buf_fence *)arg,
+					&df, sizeof(df))) {
+			ret = -EFAULT;
+			break;
+		}
+
+		break;
+	case DMABUF_IOCTL_PUT_FENCE:
+		if (!dmabuf->sync) {
+			ret = -EPERM;
+			break;
+		}
+
+		if (copy_from_user(&df, (struct dma_buf_fence *)arg,
+					sizeof(df))) {
+			ret = -EFAULT;
+			break;
+		}
+
+		ret = dma_buf_put_fence(dmabuf, &df, filp);
+		if (ret < 0)
+			break;
+
+		if (copy_to_user((struct dma_buf_fence *)arg,
+					&df, sizeof(df))) {
+			ret = -EFAULT;
+			break;
+		}
+
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	return ret;
+}
+
+static unsigned int dma_buf_poll(struct file *filp,
+					struct poll_table_struct *poll)
+{
+	struct dma_buf *dmabuf;
+	struct dmabuf_sync_reservation *robj;
+	int ret = 0;
+
+	if (!is_dma_buf_file(filp))
+		return POLLERR;
+
+	dmabuf = filp->private_data;
+	if (!dmabuf || !dmabuf->sync)
+		return POLLERR;
+
+	robj = dmabuf->sync;
+
+	mutex_lock(&robj->lock);
+
+	robj->polled = true;
+
+	/*
+	 * CPU or DMA access to this buffer has been completed, and
+	 * the blocked task has been waked up. Return poll event
+	 * so that the task can get out of select().
+	 */
+	if (robj->poll_event) {
+		robj->poll_event = false;
+		mutex_unlock(&robj->lock);
+		return POLLIN | POLLOUT;
+	}
+
+	/*
+	 * There is no anyone accessing this buffer so just return POLLERR.
+	 */
+	if (!robj->locked) {
+		mutex_unlock(&robj->lock);
+		return POLLERR;
+	}
+
+	poll_wait(filp, &robj->poll_wait, poll);
+
+	mutex_unlock(&robj->lock);
+
+	return ret;
+}
+
+static int dma_buf_lock(struct file *file, int cmd, struct file_lock *fl)
+{
+	struct dma_buf *dmabuf;
+	unsigned int type;
+	bool wait = false;
+
+	if (!is_dma_buf_file(file))
+		return -EINVAL;
+
+	dmabuf = file->private_data;
+
+	if ((fl->fl_type & F_UNLCK) == F_UNLCK) {
+		dmabuf_sync_single_unlock(dmabuf);
+		return 0;
+	}
+
+	/* convert flock type to dmabuf sync type. */
+	if ((fl->fl_type & F_WRLCK) == F_WRLCK)
+		type = DMA_BUF_ACCESS_W;
+	else if ((fl->fl_type & F_RDLCK) == F_RDLCK)
+		type = DMA_BUF_ACCESS_R;
+	else
+		return -EINVAL;
+
+	if (fl->fl_flags & FL_SLEEP)
+		wait = true;
+
+	/* TODO. the locking to certain region should also be considered. */
+
+	return dmabuf_sync_single_lock(dmabuf, type, wait);
+}
+
 static const struct file_operations dma_buf_fops = {
 	.release	= dma_buf_release,
+	.mmap		= dma_buf_mmap_internal,
+	.unlocked_ioctl = dma_buf_ioctl,
+	.poll		= dma_buf_poll,
+	.lock		= dma_buf_lock,
 };
 
 /*
  * is_dma_buf_file - Check if struct file* is associated with dma_buf
  */
-static inline int is_dma_buf_file(struct file *file)
+int is_dma_buf_file(struct file *file)
 {
 	return file->f_op == &dma_buf_fops;
 }
@@ -72,21 +339,23 @@ static inline int is_dma_buf_file(struct file *file)
  *
  */
 struct dma_buf *dma_buf_export(void *priv, const struct dma_buf_ops *ops,
-				size_t size, int flags)
+			       size_t size, int flags)
 {
 	struct dma_buf *dmabuf;
 	struct file *file;
+	size_t alloc_size = sizeof(struct dma_buf);
 
 	if (WARN_ON(!priv || !ops
 			  || !ops->map_dma_buf
 			  || !ops->unmap_dma_buf
 			  || !ops->release
 			  || !ops->kmap_atomic
-			  || !ops->kmap)) {
+			  || !ops->kmap
+			  || !ops->mmap)) {
 		return ERR_PTR(-EINVAL);
 	}
 
-	dmabuf = kzalloc(sizeof(struct dma_buf), GFP_KERNEL);
+	dmabuf = kzalloc(alloc_size, GFP_KERNEL);
 	if (dmabuf == NULL)
 		return ERR_PTR(-ENOMEM);
 
@@ -96,6 +365,7 @@ struct dma_buf *dma_buf_export(void *priv, const struct dma_buf_ops *ops,
 
 	file = anon_inode_getfile("dmabuf", &dma_buf_fops, dmabuf, flags);
 
+	dmabuf_sync_reservation_init(dmabuf);
 	dmabuf->file = file;
 
 	mutex_init(&dmabuf->lock);
@@ -339,7 +609,7 @@ EXPORT_SYMBOL_GPL(dma_buf_end_cpu_access);
 
 /**
  * dma_buf_kmap_atomic - Map a page of the buffer object into kernel address
- * space. The same restrictions as for kmap_atomic and friends apply.
+ * space. The same restrictions as for kmap_atomic and friensync apply.
  * @dma_buf:	[in]	buffer to map page from.
  * @page_num:	[in]	page in PAGE_SIZE units to map.
  *
@@ -374,7 +644,7 @@ EXPORT_SYMBOL_GPL(dma_buf_kunmap_atomic);
 
 /**
  * dma_buf_kmap - Map a page of the buffer object into kernel address space. The
- * same restrictions as for kmap and friends apply.
+ * same restrictions as for kmap and friensync apply.
  * @dma_buf:	[in]	buffer to map page from.
  * @page_num:	[in]	page in PAGE_SIZE units to map.
  *
@@ -406,3 +676,111 @@ void dma_buf_kunmap(struct dma_buf *dmabuf, unsigned long page_num,
 		dmabuf->ops->kunmap(dmabuf, page_num, vaddr);
 }
 EXPORT_SYMBOL_GPL(dma_buf_kunmap);
+
+
+/**
+ * dma_buf_mmap - Setup up a userspace mmap with the given vma
+ * @dma_buf:	[in]	buffer that should back the vma
+ * @vma:	[in]	vma for the mmap
+ * @pgoff:	[in]	offset in pages where this mmap should start within the
+ * 			dma-buf buffer.
+ *
+ * This function adjusts the passed in vma so that it points at the file of the
+ * dma_buf operation. It alsog adjusts the starting pgoff and does bounsync
+ * checking on the size of the vma. Then it calls the exporters mmap function to
+ * set up the mapping.
+ *
+ * Can return negative error values, returns 0 on success.
+ */
+int dma_buf_mmap(struct dma_buf *dmabuf, struct vm_area_struct *vma,
+		 unsigned long pgoff)
+{
+	if (WARN_ON(!dmabuf || !vma))
+		return -EINVAL;
+
+	/* check for offset overflow */
+	if (pgoff + ((vma->vm_end - vma->vm_start) >> PAGE_SHIFT) < pgoff)
+		return -EOVERFLOW;
+
+	/* check for overflowing the buffer's size */
+	if (pgoff + ((vma->vm_end - vma->vm_start) >> PAGE_SHIFT) >
+	    dmabuf->size >> PAGE_SHIFT)
+		return -EINVAL;
+
+	/* readjust the vma */
+	if (vma->vm_file)
+		fput(vma->vm_file);
+
+	vma->vm_file = dmabuf->file;
+	get_file(vma->vm_file);
+
+	vma->vm_pgoff = pgoff;
+
+	return dmabuf->ops->mmap(dmabuf, vma);
+}
+EXPORT_SYMBOL_GPL(dma_buf_mmap);
+
+/**
+ * dma_buf_vmap - Create virtual mapping for the buffer object into kernel address space. The same restrictions as for vmap and friensync apply.
+ * @dma_buf:	[in]	buffer to vmap
+ *
+ * This call may fail due to lack of virtual mapping address space.
+ * These calls are optional in drivers. The intended use for them
+ * is for mapping objects linear in kernel space for high use objects.
+ * Please attempt to use kmap/kunmap before thinking about these interfaces.
+ */
+void *dma_buf_vmap(struct dma_buf *dmabuf)
+{
+	void *ptr;
+
+	if (WARN_ON(!dmabuf))
+		return NULL;
+
+	if (!dmabuf->ops->vmap)
+		return NULL;
+
+	mutex_lock(&dmabuf->lock);
+	if (dmabuf->vmapping_counter) {
+		dmabuf->vmapping_counter++;
+		BUG_ON(!dmabuf->vmap_ptr);
+		ptr = dmabuf->vmap_ptr;
+		goto out_unlock;
+	}
+
+	BUG_ON(dmabuf->vmap_ptr);
+
+	ptr = dmabuf->ops->vmap(dmabuf);
+	if (IS_ERR_OR_NULL(ptr))
+		goto out_unlock;
+
+	dmabuf->vmap_ptr = ptr;
+	dmabuf->vmapping_counter = 1;
+
+out_unlock:
+	mutex_unlock(&dmabuf->lock);
+	return ptr;
+}
+EXPORT_SYMBOL_GPL(dma_buf_vmap);
+
+/**
+ * dma_buf_vunmap - Unmap a vmap obtained by dma_buf_vmap.
+ * @dma_buf:	[in]	buffer to vmap
+ */
+void dma_buf_vunmap(struct dma_buf *dmabuf, void *vaddr)
+{
+	if (WARN_ON(!dmabuf))
+		return;
+
+	BUG_ON(!dmabuf->vmap_ptr);
+	BUG_ON(dmabuf->vmapping_counter == 0);
+	BUG_ON(dmabuf->vmap_ptr != vaddr);
+
+	mutex_lock(&dmabuf->lock);
+	if (--dmabuf->vmapping_counter == 0) {
+		if (dmabuf->ops->vunmap)
+			dmabuf->ops->vunmap(dmabuf, vaddr);
+		dmabuf->vmap_ptr = NULL;
+	}
+	mutex_unlock(&dmabuf->lock);
+}
+EXPORT_SYMBOL_GPL(dma_buf_vunmap);
