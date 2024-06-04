@@ -87,6 +87,13 @@ config ANDROID_INTF_ALARM_DEV
 	  elapsed realtime, and a non-wakeup alarm on the monotonic clock.
 	  Also exports the alarm interface to user-space.
 
+config SUPPORT_ALARM_TIMEZONE_DST
+	bool "Alarm manager support timezone and dst"
+	default n
+	---help---
+	 Support timezone and dst from user space.
+         Alarm manager give us timezone and dst time
+
 endif # if ANDROID
 
 endmenu

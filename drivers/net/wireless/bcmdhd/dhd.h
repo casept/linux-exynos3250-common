@@ -4,7 +4,7 @@
  * Provides type definitions and function prototypes used to link the
  * DHD OS, bus, and protocol modules.
  *
- * Copyright (C) 1999-2016, Broadcom Corporation
+ * Copyright (C) 1999-2017, Broadcom Corporation
  * 
  *      Unless you and Broadcom execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
@@ -24,7 +24,7 @@
  * software in any way with any other Broadcom software provided under a license
  * other than the GPL, without Broadcom's express prior written consent.
  *
- * $Id: dhd.h 619483 2016-02-17 02:10:55Z $
+ * $Id: dhd.h 682768 2017-02-03 04:59:17Z $
  */
 
 /****************
@@ -400,6 +400,9 @@ typedef struct dhd_pub {
 	unsigned int dld_enable;
 #endif /* DHD_LOG_DUMP */
 	bool max_dtim_enable;         /* use MAX bcn_li_dtim value in suspend mode */
+#ifdef ENABLE_WAKEUP_PKT_DUMP
+	long long temp_raw;
+#endif /* ENABLE_WAKEUP_PKT_DUMP */
 } dhd_pub_t;
 #if defined(CUSTOMER_HW4)
 #define MAX_RESCHED_CNT 600
@@ -707,7 +710,9 @@ extern int dhd_keep_alive_onoff(dhd_pub_t *dhd);
 #define DHD_MULTICAST6_FILTER_NUM	3
 #define DHD_MDNS_FILTER_NUM		4
 #define DHD_ARP_FILTER_NUM		5
-extern int 	dhd_os_enable_packet_filter(dhd_pub_t *dhdp, int val);
+#define DHD_BROADCAST_ARP_FILTER_NUM	6
+#define DHD_IP4BCAST_DROP_FILTER_NUM	7
+extern int dhd_os_enable_packet_filter(dhd_pub_t *dhdp, int val);
 extern void dhd_enable_packet_filter(int value, dhd_pub_t *dhd);
 extern int net_os_enable_packet_filter(struct net_device *dev, int val);
 extern int net_os_rxfilter_add_remove(struct net_device *dev, int val, int num);

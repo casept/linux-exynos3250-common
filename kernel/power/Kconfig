@@ -148,22 +148,6 @@ config PM_WAKELOCKS_GC
 	depends on PM_WAKELOCKS
 	default y
 
-config PM_SLAVE_WAKELOCKS
-	bool "Slave wakelocks for user space wakeup sources"
-	depends on PM_WAKELOCKS
-	default n
-
-config PM_SLAVE_WAKELOCKS_LIMIT
-	int "Maximum number of slave wakelocks per user space wakeup source(0 = no limit)"
-	range 0 100000
-	default 100
-	depends on PM_SLAVE_WAKELOCKS
-
-config PM_SLAVE_WAKELOCKS_GC
-	bool "Garbage collector for slave wakelocks"
-	depends on PM_SLAVE_WAKELOCKS
-	default y
-
 config PM_RUNTIME
 	bool "Run-time PM core functionality"
 	depends on !IA64_HP_SIM

@@ -31,106 +31,6 @@
 #include <drm/exynos_drm.h>
 #endif
 
-#ifdef CONFIG_KEYBOARD_S2MPW01
-#include <linux/mfd/samsung/s2mpw01_keys.h>
-#include <linux/input.h>
-#endif
-
-#ifdef CONFIG_FUELGAUGE_S2MPW01
-#include <linux/battery/fuelgauge/s2mpw01_fuelgauge.h>
-#endif
-
-#ifdef CONFIG_CHARGER_S2MPW01
-#include <linux/battery/charger/s2mpw01_charger.h>
-#endif
-
-#ifdef CONFIG_KEYBOARD_S2MPW01
-static struct power_keys_button power_button[] = {
-	{
-		.code = KEY_POWER,
-		.wakeup = true,
-		.desc = "KEY_POWER",
-	},
-};
-
-static struct power_keys_platform_data keys_pdata = {
-	.buttons = power_button,
-	.nbuttons = ARRAY_SIZE(power_button),
-	.name = "s2mpw01-power-keys",
-};
-#endif
-
-#ifdef CONFIG_FUELGAUGE_S2MPW01
-#define GPIO_FUEL_nALRT		EXYNOS3_GPX1(5)
-
-static s2mpw01_fuelgauge_platform_data_t fuelgauge_pata = {
-	.fuelgauge_name = "fuelgauge_name",
-	.fg_irq = GPIO_FUEL_nALRT,
-	.fuel_alert_soc = 2,
-	.repeated_fuelalert = false,
-	.capacity_calculation_type =
-		SEC_FUELGAUGE_CAPACITY_TYPE_RAW |
-		SEC_FUELGAUGE_CAPACITY_TYPE_SCALE |
-		SEC_FUELGAUGE_CAPACITY_TYPE_DYNAMIC_SCALE |
-		SEC_FUELGAUGE_CAPACITY_TYPE_SKIP_ABNORMAL,
-	.capacity_max = 1000,
-	.capacity_max_margin = 30,
-	.capacity_min = -8,
-};
-#endif
-
-#ifdef CONFIG_CHARGER_S2MPW01
-
-#if 0
-	/* Charger */
-	.chg_gpio_en = 0,
-	.chg_polarity_en = 0,
-	.chg_gpio_status = 0,
-	.chg_polarity_status = 0,
-	.chg_irq = 0,
-	.chg_irq_attr = 0,
-#endif
-
-
-static s2mpw01_charger_platform_data_t charger_pata = {
-	.charging_current_table = charging_current_table,
-	.chg_float_voltage = 4400,
-	.charger_name = "sec-charger",
-	/* 2nd full check */
-	.full_check_type_2nd = SEC_BATTERY_FULLCHARGED_CHGPSY,
-};
-#endif
-
-
-static struct mfd_cell s2mpw01_devs[] = {
-#ifdef CONFIG_REGULATOR_S2MPW01
-	{ .name = "s2mpw01-pmic", },
-#endif
-#ifdef CONFIG_RTC_DRV_S2MP
-	{ .name = "s2mp-rtc", },
-#endif
-#ifdef CONFIG_KEYBOARD_S2MPW01
-	{ .name = "s2mpw01-power-keys",
-	   .platform_data = &keys_pdata,
-	   .pdata_size = sizeof(keys_pdata),
-	 },
-#endif
-#ifdef CONFIG_CHARGER_S2MPW01
-	{ .name = "s2mpw01-charger",
-		.platform_data = &charger_pata,
-		.pdata_size = sizeof(charger_pata),
-
-},
-#endif
-#ifdef CONFIG_FUELGAUGE_S2MPW01
-	{ .name = "s2mpw01-fuelgauge",
-	   .platform_data = &fuelgauge_pata,
-	   .pdata_size = sizeof(fuelgauge_pata),
-},
-#endif
-};
-
-
 int sec_reg_read(struct sec_pmic_dev *sec_pmic, u32 reg, void *dest)
 {
 	return regmap_read(sec_pmic->regmap, reg, dest);
@@ -325,6 +225,7 @@ static int sec_pmic_probe(struct i2c_client *i2c,
 		sec_pmic->ono = pdata->ono;
 		sec_pmic->irq_base = pdata->irq_base;
 		sec_pmic->wakeup = pdata->wakeup;
+		sec_pmic->using_rid_detect = pdata->using_rid_detect;
 	}
 
 	sec_pmic->regmap = regmap_init_i2c(i2c, &sec_regmap_config);
@@ -423,8 +324,8 @@ static int sec_pmic_probe(struct i2c_client *i2c,
 	pm_runtime_set_active(sec_pmic->dev);
 	switch (sec_pmic->device_type) {
 	case S2MPW01:
-		ret = mfd_add_devices(sec_pmic->dev, -1, s2mpw01_devs,
-					ARRAY_SIZE(s2mpw01_devs), NULL, 0);
+		ret = mfd_add_devices(sec_pmic->dev, -1, pdata->mfd_devs,
+					pdata->num_mfd_devs, NULL, 0);
 		break;
 	default:
 		/* If this happens the probe function is problem */

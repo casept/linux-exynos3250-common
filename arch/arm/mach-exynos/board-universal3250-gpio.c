@@ -25,6 +25,8 @@
 #include "board-smartkey-gpio.h"
 #elif defined CONFIG_MACH_VOLT
 #include "board-volt-gpio.h"
+#elif defined CONFIG_MACH_VOLT_NE
+#include "board-volt_ne-gpio.h"
 #endif
 #define ENABLE_PD_GPIO 1
 #define ENABLE_PD_GPIO_ALIVE 1

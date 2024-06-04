@@ -113,7 +113,11 @@ static struct bbd_device bbd;
  */
 static unsigned char bbd_patch[] =
 {
+#ifdef CONFIG_MACH_VOLT_NE
+#include "bbd_patch_file_volt_ne.h"
+#else
 #include "bbd_patch_file_volt.h"
+#endif
 };
 
 /* Function to push read data into any bbd device's read buf */

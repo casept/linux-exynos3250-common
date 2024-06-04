@@ -9,24 +9,14 @@
 #include <linux/device.h>
 #include <linux/mutex.h>
 #include <linux/pm_wakeup.h>
-#ifdef CONFIG_PM_SLEEP_HISTORY
-#include <linux/power/sleep_history.h>
-#endif
 
-#ifdef CONFIG_SLEEP_MONITOR
-#include <linux/power/slp_mon_ws_dev.h>
-#include <linux/power/sleep_monitor.h>
+#ifdef CONFIG_WS_HISTORY
+#include <linux/power/ws_history.h>
 #endif
 
 #include "power.h"
 
-static int autosleep_state_banner = 0x4b4f4f47;
-static suspend_state_t autosleep_state_before = 0x5a5a0000;
-static suspend_state_t autosleep_state_1=100;
-static suspend_state_t autosleep_state=100;
-static suspend_state_t autosleep_state_2=100;
-static suspend_state_t autosleep_state_after = 0xa5a50000;
-
+static suspend_state_t autosleep_state;
 static struct workqueue_struct *autosleep_wq;
 /*
  * Note: it is only safe to mutex_lock(&autosleep_lock) if a wakeup_source
@@ -37,103 +27,35 @@ static struct workqueue_struct *autosleep_wq;
 static DEFINE_MUTEX(autosleep_lock);
 static struct wakeup_source *autosleep_ws;
 
-
-// TODO: Need to remove. This is to debug memory corruption issue
-void temp_func(void)
-{
-	printk("%s(%08x) %d(%08x, %d, %d, %d, %08x)\n", __func__, autosleep_state_banner, 0,
-		autosleep_state_before, autosleep_state_1, autosleep_state, autosleep_state_2, autosleep_state_after);
-
-	return;
-}
-
-
-
 static void try_to_suspend(struct work_struct *work)
 {
 	unsigned int initial_count, final_count;
 	int error = 0;
-#ifdef CONFIG_PM_SLEEP_HISTORY
-	int i;
-	static unsigned int autosleep_active;
-	static struct wakeup_source *last_ws[4];
-	struct timespec ts;
 
-	if (autosleep_active == 0) {
-		autosleep_active = 1;
-		ts = current_kernel_time();
-		sleep_history_marker(SLEEP_HISTORY_AUTOSLEEP_ENTRY,
-			&ts, NULL);
-	}
-#endif
-	if (!pm_get_wakeup_count(&initial_count, true))
+	pr_info("PM: %s: entry\n", __func__);
+
+	if (!pm_get_wakeup_count(&initial_count, true)) {
+		pr_info("PM: %s: in_progress_count is not zero\n", __func__);
 		goto out;
+	}
 
 	mutex_lock(&autosleep_lock);
 
 	if (!pm_save_wakeup_count(initial_count)) {
 		mutex_unlock(&autosleep_lock);
+		pr_info("PM: %s: can't not save initial_count\n", __func__);
 		goto out;
 	}
 
-#ifdef CONFIG_PM_SLEEP_HISTORY
-	memset(last_ws, 0, sizeof(last_ws));
-	pm_get_last_wakeup_sources(&last_ws[0],
-		sizeof(last_ws)/sizeof(struct wakeup_source *));
-
-	autosleep_active = 0;
-	ts=current_kernel_time();
-	if (last_ws[0]) {
-		sleep_history_marker(SLEEP_HISTORY_AUTOSLEEP_EXIT,
-			&ts, last_ws[0]);
-
-		for (i = 1;  last_ws[i] && i < sizeof(last_ws)/sizeof(struct wakeup_source *); i++)
-			sleep_history_marker(SLEEP_HISTORY_AUTOSLEEP_EXIT,
-				NULL, last_ws[i]);
-		memset(last_ws, 0, sizeof(last_ws));
-	} else
-		sleep_history_marker(SLEEP_HISTORY_AUTOSLEEP_EXIT,
-			&ts, autosleep_ws);
-#endif
-
-#ifdef CONFIG_SLEEP_MONITOR
-{
-	char *slp_mon_ws_name[SLEEP_MON_WS_ARRAY_SIZE];
-	static ktime_t slp_mon_ws_prv_t[SLEEP_MON_WS_ARRAY_SIZE];
-	static int i = 0;
-	int ret = 0;
-
-	for (i = 0; i < SLEEP_MON_WS_ARRAY_SIZE; i++) {
-		slp_mon_ws_name[i] = (char *)kmalloc(sizeof(char *) *
-							SLEEP_MON_WS_NAME_LENGTH, GFP_KERNEL);
-		memset(slp_mon_ws_name[i], 0, SLEEP_MON_WS_ARRAY_SIZE);
-		slp_mon_ws_prv_t[i] = ktime_set(0, 0);
-	}
-
-	ret = sleep_monitor_wakeup_sources(slp_mon_ws_name, slp_mon_ws_prv_t);
-	init_ws_data();
-	if (slp_mon_ws_name[0]) {
-		for (i = 0; i < ret; i++) {
-			if (slp_mon_ws_name[i] && (ktime_to_ms(slp_mon_ws_prv_t[i]) != 0)) {
-					add_slp_mon_ws_list((char*)slp_mon_ws_name[i], slp_mon_ws_prv_t[i]);
-			}
-		}
-		pm_del_prevent_sleep_time();
-	} else {
-		if (ktime_to_ms(autosleep_ws->prevent_time) != 0)
-				add_slp_mon_ws_list((char*)((struct wakeup_source*)autosleep_ws)->name,
-							((struct wakeup_source*)autosleep_ws)->prevent_time);
-	}
-	for (i = 0; i < SLEEP_MON_WS_ARRAY_SIZE; i++)
-		kfree(slp_mon_ws_name[i]);
-
-	pm_del_prevent_sleep_time();
-}
+#ifdef CONFIG_WS_HISTORY
+	update_ws_history_prv_time();
 #endif
 	if (autosleep_state == PM_SUSPEND_ON) {
 		mutex_unlock(&autosleep_lock);
+		pr_info("PM: %s: autosleep_state is PM_SUSPEND_ON\n", __func__);
 		return;
 	}
+
 	if (autosleep_state >= PM_SUSPEND_MAX)
 		hibernate();
 	else
@@ -141,19 +63,13 @@ static void try_to_suspend(struct work_struct *work)
 
 	mutex_unlock(&autosleep_lock);
 
-#ifdef CONFIG_PM_SLEEP_HISTORY
-	if (autosleep_active == 0) {
-		autosleep_active = 1;
-		ts =current_kernel_time();
-		sleep_history_marker(SLEEP_HISTORY_AUTOSLEEP_ENTRY,
-			&ts, NULL);
-	}
-#endif
 	if (error)
 		goto out;
 
-	if (!pm_get_wakeup_count(&final_count, false))
+	if (!pm_get_wakeup_count(&final_count, false)) {
+		pr_info("PM: %s:in_progress_count is not zero\n", __func__);
 		goto out;
+	}
 
 	/*
 	 * If the wakeup occured for an unknown reason, wait to prevent the
@@ -163,28 +79,6 @@ static void try_to_suspend(struct work_struct *work)
 		schedule_timeout_uninterruptible(HZ / 2);
 
  out:
-#ifdef CONFIG_PM_SLEEP_HISTORY
-	memset(last_ws, 0, sizeof(last_ws));
-	pm_get_last_wakeup_sources(&last_ws[0],
-		sizeof(last_ws)/sizeof(struct wakeup_source *));
-
-	if (autosleep_state == PM_SUSPEND_ON) {
-		autosleep_active = 0;
-		ts = current_kernel_time();
-		if (last_ws[0]) {
-			sleep_history_marker(SLEEP_HISTORY_AUTOSLEEP_EXIT,
-				&ts, last_ws[0]);
-
-			for (i = 1; last_ws[i] && i < sizeof(last_ws)/sizeof(struct wakeup_source *); i++)
-				sleep_history_marker(SLEEP_HISTORY_AUTOSLEEP_EXIT,
-					NULL, last_ws[i]);
-			memset(last_ws, 0, sizeof(last_ws));
-			//pm_del_prevent_sleep_time();
-		} else
-			sleep_history_marker(SLEEP_HISTORY_AUTOSLEEP_EXIT,
-				&ts, autosleep_ws);
-	}
-#endif
 	/*
 	 * If the device failed to suspend, wait to prevent the
 	 * system from trying to suspend and waking up in a tight loop.
@@ -231,15 +125,9 @@ int pm_autosleep_set_state(suspend_state_t state)
 
 	mutex_lock(&autosleep_lock);
 
-	printk("%s(%08x) %d(%08x, %d, %d, %d, %08x)\n", __func__, autosleep_state_banner, state,
-		autosleep_state_before, autosleep_state_1, autosleep_state, autosleep_state_2, autosleep_state_after);
-	
-	autosleep_state_banner = 0x6b6f6f77;
-	autosleep_state_before++;
-	autosleep_state_1 = state;
 	autosleep_state = state;
-	autosleep_state_2 = state;
-	autosleep_state_after++;
+
+	pr_info("PM: %s: state: %d\n", __func__, state);
 
 	if (state >= PM_SUSPEND_MAX || state < 0) {
 		WARN_ON(1);

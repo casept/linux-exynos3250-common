@@ -69,6 +69,7 @@ struct sec_pmic_dev {
 	int type;
 	bool wakeup;
 	bool wtsr_smpl;
+	bool using_rid_detect;
 	struct sec_pmic_platform_data *pdata;
 };
 
@@ -142,6 +143,11 @@ struct sec_pmic_platform_data {
 	int buck3_init;
 	int buck4_init;
 	int buck6_init;
+
+	bool using_rid_detect;
+
+	int num_mfd_devs;
+	struct mfd_cell *mfd_devs;
 };
 
 extern int s2mpw01_irq_init(struct sec_pmic_dev *s2mpw01);

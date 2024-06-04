@@ -74,6 +74,7 @@ struct sec_battery_info {
 	struct workqueue_struct *monitor_wqueue;
 	struct delayed_work monitor_work;
 	struct delayed_work batt_booting_check_work;
+	struct wake_lock booting_check_lock;
 	int booting_check;
 	unsigned int polling_count;
 	unsigned int polling_time;
@@ -130,6 +131,7 @@ struct sec_battery_info {
 	struct wake_lock vbus_wake_lock;
 	unsigned int full_check_cnt;
 	unsigned int recharge_check_cnt;
+	bool charging_block;
 
 	/* estimated battery level check */
 	unsigned int charging_start_capa;
@@ -147,19 +149,11 @@ struct sec_battery_info {
 
 	int siop_level;
 
-#if defined(CONFIG_BATTERY_SWELLING)
-	int swelling_temp_dischg_threshold;
-	int swelling_temp_dischg_recovery;
-	int swelling_temp_high_threshold;
-	int swelling_temp_high_recovery;
-	int swelling_temp_low_threshold;
-	int swelling_temp_low_recovery;
-	int swelling_recharge_voltage;
-	int swelling_block_time;
+	int retail_mode;
 
-	int swelling_max_vbat;
-	int swelling_mode;
-	int swelling_block;
+#if defined(CONFIG_BATTERY_SWELLING)
+	bool swelling_mode;
+	bool swelling_mode_cur;
 	unsigned long swelling_block_start;
 	unsigned long swelling_block_passed;
 	int swelling_full_check_cnt;
@@ -234,6 +228,7 @@ enum {
 	WC_ENABLE,
 	FACTORY_MODE,
 	UPDATE,
+	FG_SWITCH,
 	TEST_MODE,
 
 	BATT_EVENT_CALL,
@@ -257,6 +252,8 @@ enum {
 #if defined(CONFIG_SAMSUNG_BATTERY_ENG_TEST)
 	BATT_TEST_CHARGE_CURRENT,
 #endif
+	CHG_ON,
+	CHG_RETAIL_MODE,
 };
 
 #endif /* __SEC_BATTERY_H */

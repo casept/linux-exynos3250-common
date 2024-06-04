@@ -154,3 +154,14 @@ config SENSORS_SSP_ATSAMG55
 	  factory test.
 	  To compile this driver as a module, choose M here: the
 	  module will be called ssp.
+
+config SENSORS_SSP_MS5837
+	tristate "Sensors ssp ms5837"
+	default n
+	depends on SPI
+	help
+	  ms5837 file for factory test in ssp driver.
+          If you say yes here you get ms5837 support for
+	  factory test.
+	  To compile this driver as a module, choose M here: the
+	  module will be called ssp.

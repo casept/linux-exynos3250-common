@@ -124,7 +124,7 @@ struct bcm_spi_priv
 	struct bcm_ssi_tx_frame *tx_buf;
 	struct bcm_ssi_rx_frame *rx_buf;
 
-	//struct wake_lock bcm_wake_lock;
+	struct wake_lock bcm_wake_lock;
 };
 
 static struct bcm_spi_priv *g_bcm_gps;
@@ -653,6 +653,7 @@ static irqreturn_t bcm_irq_handler(int irq, void *pdata)
 {
 	struct bcm_spi_priv *priv = (struct bcm_spi_priv *) pdata;
 
+	pr_info("[SSPBBD]: %s \n", __func__);
 	if (!gpio_get_value(priv->host_req))
 		return IRQ_HANDLED;
 #ifdef DEBUG_1HZ_STAT
@@ -673,6 +674,7 @@ static irqreturn_t bcm_irq_handler(int irq, void *pdata)
 	if (!atomic_read(&priv->suspending))
 		queue_work(priv->serial_wq, &priv->rxtx_work);
 
+	wake_lock_timeout(&priv->bcm_wake_lock, HZ/2);
 	return IRQ_HANDLED;
 }
 
@@ -709,6 +711,7 @@ static int bcm_spi_resume(struct spi_device *spi)
 	struct bcm_spi_priv *priv = (struct bcm_spi_priv*) spi_get_drvdata(spi);
 	unsigned long int flags;
 
+	pr_info("[SSPBBD]: %s ++ \n", __func__);
 	atomic_set(&priv->suspending, 0);
 
 	/* Enable irq */
@@ -720,6 +723,7 @@ static int bcm_spi_resume(struct spi_device *spi)
 
 	//	wake_lock_timeout(&spi->bcm_wake_lock, HZ/2);
 
+	pr_info("[SSPBBD]: %s -- \n", __func__);
 	return 0;
 }
 
@@ -877,7 +881,7 @@ static int bcm_spi_probe(struct spi_device *spi)
 	priv->mcu_resp = mcu_resp;
 
 	/* Init - etc */
-	//wake_lock_init(&priv->bcm_wake_lock, WAKE_LOCK_SUSPEND, "bcm_spi_wake_lock");
+	wake_lock_init(&priv->bcm_wake_lock, WAKE_LOCK_SUSPEND, "bcm_spi_wake_lock");
 
 	g_bcm_gps = priv;
 	/* Init BBD & SSP */

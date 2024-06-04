@@ -271,6 +271,7 @@ static ssize_t raw_data_read(struct device *dev,
 		data->buf[ACCELEROMETER_SENSOR].z);
 }
 
+#ifndef CONFIG_MACH_VOLT_NE
 static ssize_t untilt_raw_data_read(struct device *dev,
 	struct device_attribute *attr, char *buf)
 {
@@ -341,6 +342,7 @@ static ssize_t untilt_raw_data_read(struct device *dev,
 		x_sum/sum_count, y_sum/sum_count,
 		z_sum/sum_count);
 }
+#endif
 
 static ssize_t accel_reactive_alert_store(struct device *dev,
 	struct device_attribute *attr, const char *buf, size_t size)
@@ -495,7 +497,9 @@ static DEVICE_ATTR(vendor, S_IRUGO, accel_vendor_show, NULL);
 static DEVICE_ATTR(calibration, S_IRUGO | S_IWUSR | S_IWGRP,
 	accel_calibration_show, accel_calibration_store);
 static DEVICE_ATTR(raw_data, S_IRUGO, raw_data_read, NULL);
+#ifndef CONFIG_MACH_VOLT_NE
 static DEVICE_ATTR(untilt_raw_data, S_IRUGO, untilt_raw_data_read, NULL);
+#endif
 static DEVICE_ATTR(reactive_alert, S_IRUGO | S_IWUSR | S_IWGRP,
 	accel_reactive_alert_show, accel_reactive_alert_store);
 static DEVICE_ATTR(selftest, S_IRUGO, accel_hw_selftest_show, NULL);
@@ -507,7 +511,9 @@ static struct device_attribute *acc_attrs[] = {
 	&dev_attr_vendor,
 	&dev_attr_calibration,
 	&dev_attr_raw_data,
+#ifndef CONFIG_MACH_VOLT_NE
 	&dev_attr_untilt_raw_data,
+#endif
 	&dev_attr_reactive_alert,
 	&dev_attr_selftest,
 	&dev_attr_lowpassfilter,

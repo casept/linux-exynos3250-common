@@ -627,6 +627,7 @@ struct ssp_data {
 	struct device *voice_device;
 
 	bool bSspShutdown;
+	bool bSspReady;
 	bool bAccelAlert;
 	bool bGeomagneticRawEnabled;
 	bool bMcuDumpMode;
@@ -878,6 +879,7 @@ void sensors_unregister(struct device *,
 	struct device_attribute*[]);
 ssize_t mcu_sensor_state(struct device *, struct device_attribute *, char *);
 ssize_t mcu_reset_show(struct device *, struct device_attribute *, char *);
+ssize_t mcu_ready_show(struct device *, struct device_attribute *, char *);
 ssize_t mcu_dump_show(struct device *, struct device_attribute *, char *);
 ssize_t mcu_revision_show(struct device *, struct device_attribute *, char *);
 ssize_t mcu_update_ums_bin_show(struct device *,

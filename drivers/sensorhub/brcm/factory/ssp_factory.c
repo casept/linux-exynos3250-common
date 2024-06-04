@@ -87,7 +87,13 @@ int pressure_open_calibration(struct ssp_data *data)
 {
 	int ret = 0;
 
+#if defined(CONFIG_SENSORS_SSP_LPS25H)
 	ret = lps25h_pressure_open_calibration(data);
+#elif defined(CONFIG_SENSORS_SSP_MS5837)
+	ret = ms5837_pressure_open_calibration(data);
+#else
+	ret = -1;
+#endif
 
 	return ret;
 }
@@ -96,7 +102,13 @@ int set_pressure_cal(struct ssp_data *data)
 {
 	int ret = 0;
 
+#if defined(CONFIG_SENSORS_SSP_LPS25H)
 	ret = lps25h_set_pressure_cal(data);
+#elif defined(CONFIG_SENSORS_SSP_MS5837)
+	ret = ms5837_set_pressure_cal(data);
+#else
+	ret = -1;
+#endif
 
 	return ret;
 }
@@ -158,7 +170,11 @@ void initialize_factorytest(struct ssp_data *data)
 #endif
 
 #ifdef CONFIG_SENSORS_SSP_PRESSURE_SENSOR
+#if defined(CONFIG_SENSORS_SSP_LPS25H)
 	initialize_lps25h_pressure_factorytest(data);
+#elif defined(CONFIG_SENSORS_SSP_MS5837)
+	initialize_ms5837_pressure_factorytest(data);
+#endif
 #endif
 #ifdef CONFIG_SENSORS_SSP_LIGHT_SENSOR
 	if (data->ap_rev > 8)
@@ -178,7 +194,11 @@ void initialize_factorytest(struct ssp_data *data)
 	initialize_k6ds_gyro_factorytest(data);
 #endif
 #ifdef CONFIG_SENSORS_SSP_PRESSURE_SENSOR
+#if defined(CONFIG_SENSORS_SSP_LPS25H)
 	initialize_lps25h_pressure_factorytest(data);
+#elif defined(CONFIG_SENSORS_SSP_MS5837)
+	initialize_ms5837_pressure_factorytest(data);
+#endif
 #endif
 #ifdef CONFIG_SENSORS_SSP_LIGHT_SENSOR
 	initialize_cm3323_light_factorytest(data);
@@ -223,7 +243,11 @@ void remove_factorytest(struct ssp_data *data)
 		remove_k6ds_gyro_factorytest(data);
 #endif
 #ifdef CONFIG_SENSORS_SSP_PRESSURE_SENSOR
+#if defined(CONFIG_SENSORS_SSP_LPS25H)
 	remove_lps25h_pressure_factorytest(data);
+#elif defined(CONFIG_SENSORS_SSP_MS5837)
+	remove_ms5837_pressure_factorytest(data);
+#endif
 #endif
 #ifdef CONFIG_SENSORS_SSP_LIGHT_SENSOR
 	if (data->ap_rev > 8)
@@ -243,7 +267,11 @@ void remove_factorytest(struct ssp_data *data)
 	remove_k6ds_gyro_factorytest(data);
 #endif
 #ifdef CONFIG_SENSORS_SSP_PRESSURE_SENSOR
+#if defined(CONFIG_SENSORS_SSP_LPS25H)
 	remove_lps25h_pressure_factorytest(data);
+#elif defined(CONFIG_SENSORS_SSP_MS5837)
+	remove_ms5837_pressure_factorytest(data);
+#endif
 #endif
 #ifdef CONFIG_SENSORS_SSP_LIGHT_SENSOR
 	remove_cm3323_light_factorytest(data);

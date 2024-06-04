@@ -19,12 +19,17 @@
 #ifndef _SENSORS_CORE_H_
 #define _SENSORS_CORE_H_
 
+#ifdef CONFIG_SENSORS_SSP
+int sensors_create_symlink(struct input_dev *);
+void sensors_remove_symlink(struct input_dev *);
+#else
 int sensors_create_symlink(struct kobject *, const char *);
 void sensors_remove_symlink(struct kobject *, const char *);
+void remap_sensor_data(s16 *, int);
+#endif
 int sensors_register(struct device *, void *,
 	struct device_attribute *[], char *);
 void sensors_unregister(struct device *, struct device_attribute *[]);
 void destroy_sensor_class(void);
-void remap_sensor_data(s16 *, int);
 
 #endif

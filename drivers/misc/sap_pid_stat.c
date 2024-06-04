@@ -442,7 +442,7 @@ static ssize_t sap_stat_snd_write_proc(struct file *file, const char __user *buf
 	str = pid_buf;
 
 	pr_debug(SAP_STAT_PREFIX"%s: user buf=%s: count=%d\n",
-				__func__, buf, count);
+				__func__, buf, (int)count);
 
 	while (*str && !isspace(*str))
 		str++;
@@ -462,7 +462,7 @@ static ssize_t sap_stat_snd_write_proc(struct file *file, const char __user *buf
 	memcpy(&aspid, pid_buf, len);
 
 	pr_debug(SAP_STAT_PREFIX"%s: aspid=%s: byte=%d: len=%d\n",
-				__func__, aspid.id, bytes, len);
+				__func__, aspid.id, bytes, (int)len);
 
 	if (bytes > 0)
 		sap_stat_snd(&aspid, bytes);
@@ -496,7 +496,7 @@ static ssize_t sap_stat_rcv_write_proc(struct file *file, const char __user *buf
 	str = pid_buf;
 
 	pr_debug(SAP_STAT_PREFIX"%s: user buf=%s: count=%d\n",
-				__func__, buf, count);
+				__func__, buf, (int)count);
 
 	while (*str && !isspace(*str))
 		str++;
@@ -516,7 +516,7 @@ static ssize_t sap_stat_rcv_write_proc(struct file *file, const char __user *buf
 	memcpy(&aspid, pid_buf, len);
 
 	pr_debug(SAP_STAT_PREFIX"%s: aspid=%s: byte=%d: len=%d\n",
-				__func__, aspid.id, bytes, len);
+				__func__, aspid.id, bytes, (int)len);
 
 	if (bytes > 0)
 		sap_stat_rcv(&aspid, bytes);
@@ -668,10 +668,14 @@ static int sap_stat_stat_show(struct seq_file *m, void *v)
 	unsigned int wakeup_count, activity_count, total_activity_cnt;
 	struct sap_pid_stat *entry;
 
-	seq_printf(m, "name\t\tcount\t\t"
-		"snd_count\tsnd_bytes\trcv_count\trcv_bytes\t"
-		"wakeup_count\ttotal_activity\ttotal_transmit\ttotal_snd_count\ttotal_snd_bytes\t"
-		"total_rcv_count\ttotal_rcv_bytes\tlast_transmit\tsuspend_count\n");
+	seq_printf(m, "name            count "
+				"snd_count snd_bytes "
+				"rcv_count rcv_bytes "
+				"wakeup_count activity_count "
+				"total_activity_cnt total_transmit_count "
+				"total_snd_count total_snd_bytes "
+				"total_rcv_count total_rcv_bytes "
+				"last_transmit suspend_count\n");
 	spin_lock_irqsave(&sap_pid_lock, flags);
 	list_for_each_entry(entry, &sap_pid_list, link) {
 		snd_bytes = (unsigned int) (atomic_read(&entry->snd_post_suspend) + INT_MIN);
@@ -690,7 +694,8 @@ static int sap_stat_stat_show(struct seq_file *m, void *v)
 		total_rcv_count = (unsigned int) (atomic_read(&entry->rcv_count) + INT_MIN);
 		total_transmit_count = total_snd_count + total_rcv_count;
 
-		seq_printf(m, "%-16s%u\t\t%u\t\t%u\t\t%u\t\t%u\t\t%u\t\t%u\t\t%u\t\t%u\t\t%u\t\t%u\t\t%u\t\t%u\t\t%lld\t\t%d\n",
+		seq_printf(m, "%-15s %5u %9u %9u %9u %9u %12u %14u "
+					"%18u %20u %15u %15u %15u %15u %13lld %13d\n",
 					entry->aspid.id, transmit_count,
 					snd_count, snd_bytes,
 					rcv_count, rcv_bytes,

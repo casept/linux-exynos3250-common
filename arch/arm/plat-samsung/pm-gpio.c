@@ -273,7 +273,8 @@ static void samsung_gpio_pm_4bit_resume(struct samsung_gpio_chip *chip)
 	if (soc_is_exynos4415() && !strcmp(chip->chip.label, "GPL1"))
 		return;
 
-#if defined(CONFIG_MACH_B2) || defined(CONFIG_MACH_WC1) || defined(CONFIG_MACH_VOLT)
+#if defined(CONFIG_MACH_B2) || defined(CONFIG_MACH_WC1)\
+		|| defined(CONFIG_MACH_VOLT) || defined(CONFIG_MACH_VOLT_NE)
 	/*
 	 * Workaround: change the pm_save data of GPK0DAT[2]
 	 * to inprove mmc0 resume time.

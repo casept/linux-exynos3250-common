@@ -21,3 +21,4 @@ obj-$(CONFIG_SENSORS_SSP_HM121)	+= gsr_hm121.o
 obj-$(CONFIG_SENSORS_SSP_ADS1292)	+= ecg_ads1292.o
 obj-$(CONFIG_SENSORS_SSP_SX9310)	+= grip_sx9310.o
 obj-$(CONFIG_SENSORS_SSP_ATSAMG55)	+= mcu_atsamg55.o
+obj-$(CONFIG_SENSORS_SSP_MS5837)	+= pressure_ms5837.o

@@ -2,7 +2,7 @@
  * Broadcom Dongle Host Driver (DHD), Linux-specific network interface
  * Basically selected code segments from usb-cdc.c and usb-rndis.c
  *
- * Copyright (C) 1999-2016, Broadcom Corporation
+ * Copyright (C) 1999-2017, Broadcom Corporation
  * 
  *      Unless you and Broadcom execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
@@ -22,7 +22,7 @@
  * software in any way with any other Broadcom software provided under a license
  * other than the GPL, without Broadcom's express prior written consent.
  *
- * $Id: dhd_linux.c 623329 2016-03-07 13:18:38Z $
+ * $Id: dhd_linux.c 682768 2017-02-03 04:59:17Z $
  */
 
 #include <typedefs.h>
@@ -78,6 +78,10 @@
 #include <dhd_bta.h>
 #endif
 
+#ifdef CONFIG_SLEEP_MONITOR
+#include <linux/power/sleep_monitor.h>
+#endif
+
 #ifdef CONFIG_COMPAT
 #include <linux/compat.h>
 #endif
@@ -128,6 +132,9 @@ static histo_t vi_d1, vi_d2, vi_d3, vi_d4;
 #define IPV6_FILTER_STR	"20"
 #define ZERO_TYPE_STR	"00"
 #endif /* BLOCK_IPV6_PACKET && CUSTOMER_HW4 */
+#define DISCARD_IPV4_MCAST	"102 1 6 IP4_H:16 0xf0 0xe0";
+#define DISCARD_IPV6_MCAST	"103 1 6 IP6_H:24 0xff 0xff";
+#define DISCARD_IPV4_BCAST	"107 1 6 IP4_H:16 0xf0 !0xe0 IP4_H:19 0xff 0xff"
 
 #if defined(SOFTAP)
 extern bool ap_cfg_running;
@@ -193,6 +200,12 @@ static bool dhd_inet6addr_notifier_registered = FALSE;
 #include <linux/suspend.h>
 volatile bool dhd_mmc_suspend = FALSE;
 DECLARE_WAIT_QUEUE_HEAD(dhd_dpc_wait);
+#ifdef ENABLE_WAKEUP_PKT_DUMP
+volatile bool dhd_mmc_wake = FALSE;
+#ifdef BT_OVER_SDIO
+volatile bool dhd_bt_wake = FALSE;
+#endif /* BT_OVER_SDIO */
+#endif /* ENABLE_WAKEUP_PKT_DUMP */
 #endif /* (LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 27)) && defined(CONFIG_PM_SLEEP) */
 
 #if defined(OOB_INTR_ONLY) || defined(BCMSPI_ANDROID)
@@ -1029,6 +1042,9 @@ static int dhd_set_suspend(int value, dhd_pub_t *dhd)
 	uint32 allmulti;
 	uint i;
 #endif /* PASS_ALL_MCAST_PKTS && CUSTOMER_HW4 */
+#ifdef ENABLE_IPMCAST_FILTER
+	int ipmcast_l2filter;
+#endif /* ENABLE_IPMCAST_FILTER */
 
 #ifdef DYNAMIC_SWOOB_DURATION
 #ifndef CUSTOM_INTR_WIDTH
@@ -1121,6 +1137,12 @@ static int dhd_set_suspend(int value, dhd_pub_t *dhd)
 						DHD_ERROR(("failed to set nd_ra_filter (%d)\n",
 							ret));
 				}
+#ifdef ENABLE_IPMCAST_FILTER
+				ipmcast_l2filter = 1;
+				bcm_mkiovar("ipmcast_l2filter", (char *)&ipmcast_l2filter,
+					4, iovbuf, sizeof(iovbuf));
+				dhd_wl_ioctl_cmd(dhd, WLC_SET_VAR, iovbuf, sizeof(iovbuf), TRUE, 0);
+#endif /* ENABLE_IPMCAST_FILTER */
 #ifdef DYNAMIC_SWOOB_DURATION
 				intr_width = CUSTOM_INTR_WIDTH;
 				bcm_mkiovar("bus:intr_width", (char *)&intr_width, 4,
@@ -1203,6 +1225,12 @@ static int dhd_set_suspend(int value, dhd_pub_t *dhd)
 						DHD_ERROR(("failed to set nd_ra_filter (%d)\n",
 							ret));
 				}
+#ifdef ENABLE_IPMCAST_FILTER
+				ipmcast_l2filter = 0;
+				bcm_mkiovar("ipmcast_l2filter", (char *)&ipmcast_l2filter,
+					4, iovbuf, sizeof(iovbuf));
+				dhd_wl_ioctl_cmd(dhd, WLC_SET_VAR, iovbuf, sizeof(iovbuf), TRUE, 0);
+#endif /* ENABLE_IPMCAST_FILTER */
 			}
 	}
 	dhd_suspend_unlock(dhd);
@@ -2204,6 +2232,96 @@ static const char *_get_packet_type_str(uint16 type)
 #endif /* DHD_RX_DUMP */
 
 
+#ifdef ENABLE_WAKEUP_PKT_DUMP
+static void
+update_wake_pkt_info(struct sk_buff *skb, dhd_info_t *dhd, int ifidx)
+{
+	struct iphdr *ip_header;
+	struct ipv6hdr *ipv6_header;
+	struct udphdr *udp_header;
+	struct tcphdr *tcp_header;
+	uint16 dport = 0;
+	uint len = skb->len;
+	dhd_pub_t *dhdp = &dhd->pub;
+
+	ip_header = (struct iphdr *)skb->data;
+
+	dhdp->temp_raw = 0;
+	dhdp->temp_raw |= ((long long)ntoh16(skb->protocol)) << 48;
+
+	DHD_INFO(("protocol : %04x eth_hdr(skb)->h_dest : %pM\n",
+		ntoh16(skb->protocol), eth_hdr(skb)->h_dest));
+	if (eth_hdr(skb)->h_dest[0] & 0x01) {
+		dhdp->temp_raw |= (long long)1 << 39;
+	}
+
+	if (ntoh16(skb->protocol) == ETHER_TYPE_BRCM) {
+		wl_event_msg_t event;
+		void *data = NULL;
+		int ret;
+		uint event_type;
+
+		ret = dhd_wl_host_event(dhd, &ifidx,
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 22)
+			skb_mac_header(skb),
+#else
+			skb->mac.raw,
+#endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 22) */
+			len > ETHER_TYPE_LEN ? len - ETHER_TYPE_LEN : 0,
+			&event,
+			&data);
+		if (ret != BCME_OK) {
+			DHD_ERROR(("%s: dhd_wl_host_event err = %d\n",
+				__FUNCTION__, ret));
+		}
+
+		event_type = ntoh32(event.event_type);
+
+		dhdp->temp_raw |= (long long)event_type << 40;
+	} else if (ntoh16(skb->protocol) == ETHER_TYPE_IP ||
+		ntoh16(skb->protocol) == ETHER_TYPE_IPV6) {
+		DHD_INFO(("ip_header->version : %d\n", ip_header->version));
+		if (ntoh16(skb->protocol) == ETHER_TYPE_IPV6) {
+			ipv6_header = (struct ipv6hdr *)ip_header;
+			dhdp->temp_raw |= ((long long)ipv6_header->nexthdr) << 40;
+			dport = 0;
+			DHD_INFO(("ipv6_header->nexthdr : %d\n", ipv6_header->nexthdr));
+
+			if (ipv6_header->daddr.s6_addr[0] & 0xff) {
+				dhdp->temp_raw |= (long long)1 << 38;
+			}
+
+			DHD_INFO(("IPv6 [%x]%pI6c > %pI6c:%d\n",
+				ip_header->protocol, &(ipv6_header->saddr.s6_addr),
+				&(ipv6_header->daddr.s6_addr), dport));
+		} else if (ntoh16(skb->protocol) == ETHER_TYPE_IP) {
+			dhdp->temp_raw |= ((long long)ip_header->protocol) << 40;
+			DHD_INFO(("ip_header->protocol : %d\n", ip_header->protocol));
+
+#define IP_HDR_OFFSET	(ip_header + sizeof(struct iphdr))
+			if (ip_header->protocol == IPPROTO_TCP) {
+				tcp_header = (struct tcphdr *)IP_HDR_OFFSET;
+				dport = ntohs(tcp_header->dest);
+			}
+			else if (ip_header->protocol == IPPROTO_UDP) {
+				udp_header = (struct udphdr *)IP_HDR_OFFSET;
+				dport = ntohs(udp_header->dest);
+			}
+
+			if (ipv4_is_multicast(ip_header->daddr)) {
+				dhdp->temp_raw |= (long long)1 << 38;
+			}
+
+			DHD_INFO(("IP [%x] %pI4 > %pI4:%d\n",
+				ip_header->protocol, &(ip_header->saddr),
+				&(ip_header->daddr), dport));
+		}
+
+		dhdp->temp_raw |= dport << 16;
+	}
+}
+#endif /* ENABLE_WAKEUP_PKT_DUMP */
+
 void
 dhd_rx_frame(dhd_pub_t *dhdp, int ifidx, void *pktbuf, int numpkt, uint8 chan)
 {
@@ -2367,6 +2485,17 @@ dhd_rx_frame(dhd_pub_t *dhdp, int ifidx, void *pktbuf, int numpkt, uint8 chan)
 #endif
 		/* Strip header, count, deliver upward */
 		skb_pull(skb, ETH_HLEN);
+
+#ifdef ENABLE_WAKEUP_PKT_DUMP
+		if (dhd_mmc_wake) {
+			DHD_INFO(("wake_pkt %s(%d)\n", __FUNCTION__, __LINE__));
+			if (DHD_INFO_ON()) {
+				prhex("wake_pkt", (char*) skb->data, MIN(len, 48));
+			}
+			update_wake_pkt_info(skb, dhd, ifidx);
+			dhd_mmc_wake = FALSE;
+		}
+#endif /* ENABLE_WAKEUP_PKT_DUMP */
 
 		/* Process special event packets and then discard them */
 		memset(&event, 0, sizeof(event));
@@ -4209,6 +4338,41 @@ extern void debugger_init(void *bus_handle);
 #endif
 
 
+#ifdef CONFIG_SLEEP_MONITOR
+int wlan_get_sleep_monitor64_cb(void *priv, long long *raw_val,
+	int check_level, int caller_type)
+{
+	struct bcm_cfg80211 *cfg = priv;
+	dhd_pub_t *dhdp = (dhd_pub_t *)(cfg->pub);
+	int state = DEVICE_UNKNOWN;
+
+	if ((priv == NULL) || (raw_val == NULL)) {
+		return state;
+	}
+
+	if (!dhdp->up) {
+		state = DEVICE_POWER_OFF;
+	} else {
+		if (wl_get_drv_status_all(cfg, CONNECTED)) {
+			state = DEVICE_ON_ACTIVE2;
+		} else {
+			state = DEVICE_ON_ACTIVE1;
+		}
+
+		if (caller_type == SLEEP_MONITOR_CALL_SUSPEND) {
+			*raw_val = dhdp->temp_raw;
+			dhdp->temp_raw = 0;
+		}
+	}
+
+	return state;
+}
+
+static struct sleep_monitor_ops wlan_sleep_monitor_ops = {
+	.read64_cb_func = wlan_get_sleep_monitor64_cb,
+};
+#endif /* CONFIG_SLEEP_MONITOR */
+
 dhd_pub_t *
 dhd_attach(osl_t *osh, struct dhd_bus *bus, uint bus_hdrlen)
 {
@@ -4344,6 +4508,11 @@ dhd_attach(osl_t *osh, struct dhd_bus *bus, uint bus_hdrlen)
 
 	dhd_monitor_init(&dhd->pub);
 	dhd_state |= DHD_ATTACH_STATE_CFG80211;
+#endif
+#ifdef CONFIG_SLEEP_MONITOR
+	sleep_monitor_register_ops(wiphy_priv(net->ieee80211_ptr->wiphy),
+		&wlan_sleep_monitor_ops,
+		SLEEP_MONITOR_WIFI);
 #endif
 #ifdef DHD_LOG_DUMP
 	dhd_log_dump_init(&dhd->pub);
@@ -4997,7 +5166,7 @@ dhd_preinit_ioctls(dhd_pub_t *dhd)
 	DHD_TRACE(("Enter %s\n", __FUNCTION__));
 	dhd->op_mode = 0;
 
-#ifdef CONFIG_MACH_VOLT
+#if defined(CONFIG_MACH_VOLT) || defined(CONFIG_MACH_VOLT_NE)
 	/* Set GARP drop in firmware */
 	{
 		uint32 grat_arp = 1;
@@ -5616,8 +5785,14 @@ dhd_preinit_ioctls(dhd_pub_t *dhd)
 	/* Setup filter to allow only unicast */
 	dhd->pktfilter[DHD_UNICAST_FILTER_NUM] = "100 0 0 0 0x01 0x00";
 	dhd->pktfilter[DHD_BROADCAST_FILTER_NUM] = NULL;
-	dhd->pktfilter[DHD_MULTICAST4_FILTER_NUM] = NULL;
-	dhd->pktfilter[DHD_MULTICAST6_FILTER_NUM] = NULL;
+	if (!FW_SUPPORTED(dhd, pf6)) {
+		dhd->pktfilter[DHD_MULTICAST4_FILTER_NUM] = NULL;
+		dhd->pktfilter[DHD_MULTICAST6_FILTER_NUM] = NULL;
+	} else {
+		/* Immediately pkt filter TYPE 6 Discard IPv4/IPv6 Multicast Packet */
+		dhd->pktfilter[DHD_MULTICAST4_FILTER_NUM] = DISCARD_IPV4_MCAST;
+		dhd->pktfilter[DHD_MULTICAST6_FILTER_NUM] = DISCARD_IPV6_MCAST;
+	}
 	/* Add filter to pass multicastDNS packet and NOT filter out as Broadcast */
 	dhd->pktfilter[DHD_MDNS_FILTER_NUM] = NULL;
 	/* apply APP pktfilter */
@@ -5645,6 +5820,12 @@ dhd_preinit_ioctls(dhd_pub_t *dhd)
 #ifdef PASS_IPV4_SUSPEND
 	dhd->pktfilter[DHD_MDNS_FILTER_NUM] = "104 0 0 0 0xFFFFFF 0x01005E";
 #endif /* PASS_IPV4_SUSPEND */
+	if (FW_SUPPORTED(dhd, pf6)) {
+		dhd->pktfilter[DHD_BROADCAST_ARP_FILTER_NUM] = NULL;
+		/* Immediately pkt filter TYPE 6 Dicard Broadcast IP packet */
+		dhd->pktfilter[DHD_IP4BCAST_DROP_FILTER_NUM] = DISCARD_IPV4_BCAST;
+		dhd->pktfilter_count = 8;
+	}
 #endif /* GAN_LITE_NAT_KEEPALIVE_FILTER */
 #endif /* CUSTOMER_HW4 */
 
@@ -6359,6 +6540,9 @@ void dhd_detach(dhd_pub_t *dhdp)
 		wl_cfg80211_detach(NULL);
 		dhd_monitor_uninit();
 	}
+#endif
+#ifdef CONFIG_SLEEP_MONITOR
+	sleep_monitor_unregister_ops(SLEEP_MONITOR_WIFI);
 #endif
 	/* free deferred work queue */
 	dhd_deferred_work_deinit(dhd->dhd_deferred_wq);
@@ -7159,6 +7343,7 @@ int net_os_rxfilter_add_remove(struct net_device *dev, int add_remove, int num)
 	return 0;
 #else
 	dhd_info_t *dhd = *(dhd_info_t **)netdev_priv(dev);
+	dhd_pub_t *dhdp = &dhd->pub;
 	char *filterp = NULL;
 	int filter_id = 0;
 	int ret = 0;
@@ -7173,16 +7358,38 @@ int net_os_rxfilter_add_remove(struct net_device *dev, int add_remove, int num)
 			filter_id = 101;
 			break;
 		case DHD_MULTICAST4_FILTER_NUM:
-			filterp = "102 0 0 0 0xFFFFFF 0x01005E";
 			filter_id = 102;
+			if (FW_SUPPORTED(dhdp, pf6)) {
+				if (dhdp->pktfilter[num] != NULL) {
+					dhd_pktfilter_offload_delete(dhdp, filter_id);
+					dhdp->pktfilter[num] = NULL;
+				}
+				if (!add_remove) {
+					filterp = DISCARD_IPV4_MCAST;
+					add_remove = 1;
+					break;
+				}
+			}
+			filterp = "102 0 0 0 0xFFFFFF 0x01005E";
 			break;
 		case DHD_MULTICAST6_FILTER_NUM:
 #if defined(BLOCK_IPV6_PACKET) && defined(CUSTOMER_HW4)
 			/* customer want to use NO IPV6 packets only */
 			return ret;
 #endif /* BLOCK_IPV6_PACKET && CUSTOMER_HW4 */
-			filterp = "103 0 0 0 0xFFFF 0x3333";
 			filter_id = 103;
+			if (FW_SUPPORTED(dhdp, pf6)) {
+				if (dhdp->pktfilter[num] != NULL) {
+					dhd_pktfilter_offload_delete(dhdp, filter_id);
+					dhdp->pktfilter[num] = NULL;
+				}
+				if (!add_remove) {
+					filterp = DISCARD_IPV6_MCAST;
+					add_remove = 1;
+					break;
+				}
+			}
+			filterp = "103 0 0 0 0xFFFF 0x3333";
 			break;
 		case DHD_MDNS_FILTER_NUM:
 			filterp = "104 0 0 0 0xFFFFFFFFFFFF 0x01005E0000FB";

@@ -360,14 +360,9 @@ extern bool pm_wakeup_pending(void);
 #ifdef CONFIG_SLEEP_MONITOR
 #include <linux/vmalloc.h>
 #include <linux/slab.h>
-extern int sleep_monitor_wakeup_sources(char **name, ktime_t *prevent_time);
 #endif
 
-#ifdef CONFIG_PM_SLEEP_HISTORY
-extern bool pm_get_last_wakeup_sources(struct wakeup_source **ws_array,  int ws_count);
-extern bool pm_get_last_wakeup_source(struct wakeup_source **last_ws);
-extern void pm_del_prevent_sleep_time(void);
-#endif
+extern void pm_get_inpr_count(unsigned int *count, unsigned int *in_progress);
 extern bool pm_get_wakeup_count(unsigned int *count, bool block);
 extern bool pm_save_wakeup_count(unsigned int count);
 extern void pm_wakep_autosleep_enabled(bool set);

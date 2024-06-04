@@ -82,13 +82,19 @@ static void sec_power_off(void)
 #define REBOOT_MODE_W_DOWNLOAD	0xb	/* wireless-download */
 #define REBOOT_MODE_W_UPLOAD	0xc	/* wireless-upload */
 #define REBOOT_MODE_W_DOWNLOAD_UPDATE	0xd	/* wireless-download update binary */
+#define REBOOT_MODE_W_DOWNLOAD_RW_UPDATE	0xe	/* wireless-download rw update binary */
 #define REBOOT_MODE_TUP			0x50555400  /* Tizen Update Partition */
 #define REBOOT_MODE_TUP_UPDATE	0x50555401  /* TUP for update */
 
 #define REBOOT_SET_PREFIX	0xabc00000
+#define REBOOT_SET_SALES_CODE  0x000a0000
 #define REBOOT_SET_DEBUG	0x000d0000
 #define REBOOT_SET_SWSEL	0x000e0000
 #define REBOOT_SET_SUD		0x000f0000
+
+#define REBOOT_SALES_CODE_BASE_PHYS     (0x40000000)
+#define REBOOT_SALES_CODE_MAGIC_ADDR    (phys_to_virt(REBOOT_SALES_CODE_BASE_PHYS))
+#define REBOOT_SALES_CODE_ADDR          (phys_to_virt(REBOOT_SALES_CODE_BASE_PHYS+4))
 
 static void sec_reboot(char str, const char *cmd)
 {
@@ -118,6 +124,9 @@ static void sec_reboot(char str, const char *cmd)
 		else if (!strcmp(cmd, "wdownload_update"))
 			writel(REBOOT_MODE_PREFIX | REBOOT_MODE_W_DOWNLOAD_UPDATE,
 			       EXYNOS_INFORM3);
+		else if (!strcmp(cmd, "wdownload_rw_update"))
+			writel(REBOOT_MODE_PREFIX | REBOOT_MODE_W_DOWNLOAD_RW_UPDATE,
+			       EXYNOS_INFORM3);
 		else if (!strcmp(cmd, "download"))
 			writel(REBOOT_MODE_PREFIX | REBOOT_MODE_DOWNLOAD,
 			       EXYNOS_INFORM3);
@@ -135,6 +144,12 @@ static void sec_reboot(char str, const char *cmd)
 		else if (!strcmp(cmd, "silent"))
 			writel(REBOOT_MODE_PREFIX | REBOOT_MODE_SILENT,
 			       EXYNOS_INFORM3);
+		else if (!strncmp(cmd, "customcsc", 9) && (cmd + 9) != NULL) {
+			memset(REBOOT_SALES_CODE_MAGIC_ADDR, 0, 8);
+			writel(REBOOT_SET_PREFIX | REBOOT_SET_SALES_CODE, REBOOT_SALES_CODE_MAGIC_ADDR);
+			snprintf(REBOOT_SALES_CODE_ADDR, 4, "%s", cmd + 9);
+			writel(REBOOT_SET_PREFIX | REBOOT_SET_SALES_CODE, EXYNOS_INFORM3);
+		}
 		else if (!strncmp(cmd, "debug", 5)
 			 && !kstrtoul(cmd + 5, 0, &value))
 			writel(REBOOT_SET_PREFIX | REBOOT_SET_DEBUG | value,

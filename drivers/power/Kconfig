@@ -339,19 +339,37 @@ config PM_SUSPEND_WAKEUP_TEST
         bool "suspend and wakeup test"
         help
          Say Y to enable suspend and wakeup test
+
+config IRQ_HISTORY
+	bool "save wakeup reason history"
+	help
+	 Say Y to enable irq_history
+
+config WS_HISTORY
+	bool "save wakeup sources"
+	help
+	 Say Y to enable ws_history
+
+config SLAVE_WAKELOCK
+	bool "slave wakelock"
+	help
+	 Say Y to enable slave wakelock device
+
 config SLEEP_MONITOR
 	bool "tizen sleep monitor"
+	select SLEEP_MONITOR_CPUIDLE
 	help
 	 Say Y to enable sleep monitor function
+
 config ENERGY_MONITOR
 	bool "tizen energy monitor"
 	help
 	 Say Y to enable energy monitor function
 
-config SLEEP_MONITOR_SLAVE_WAKELOCK
-	bool "sleep monitor slave wakelock"
+config SLEEP_MONITOR_CPUIDLE
+	bool "sleep monitor cpuidle dev"
 	help
-	 Say Y to enable slave wakelock device in sleep monitor
+	 Say Y to enable sleep monitor cpuidle dev function
 
 config SLUGGISH_ANALYZER
 	bool "Monitoring, detecting and logging sluggishness"

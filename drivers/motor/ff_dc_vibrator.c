@@ -51,10 +51,13 @@ struct ff_dc_vibrator_data {
 	struct ff_dc_vibrator_platform_data *pdata;
 	struct regulator *regulator;
 	struct work_struct work;
+	struct mutex lock;
 	int max_mV;
 	int min_mV;
 	int level;
 };
+
+static bool is_suspend = false;
 
 static void vib_en(bool en)
 {
@@ -64,6 +67,12 @@ static void vib_en(bool en)
 	if (!g_hap_data) {
 		pr_info("[VIB] the motor is not ready!!!");
 		return ;
+	}
+
+	mutex_lock(&g_hap_data->lock);
+	if (is_suspend) {
+		pr_info("[VIB] %s is called during suspend/resume.\n", __func__);
+		goto out;
 	}
 
 	if (en) {
@@ -82,14 +91,14 @@ static void vib_en(bool en)
 				g_hap_data->level, g_hap_data->level);
 		if (err) {
 			pr_info("%s - unable to set the voltage\n", __func__);
-			return;
+			goto out;
 		}
 
 		if (!regulator_is_enabled(g_hap_data->regulator)) {
 			err = regulator_enable(g_hap_data->regulator);
 			if (err) {
 				pr_info("%s - regulator_enable fail\n", __func__);
-				return;
+				goto out;
 			}
 		}
 	} else {
@@ -97,11 +106,14 @@ static void vib_en(bool en)
 			err = regulator_disable(g_hap_data->regulator);
 			if (err) {
 				pr_info("%s - regulator_disable fail\n", __func__);
-				return;
+				goto out;
 			}
 		}
 	}
 	pr_info("[VIB] %s %s - %duv\n", __func__, en ? "on" : "off", g_hap_data->level);
+out:
+	mutex_unlock(&g_hap_data->lock);
+	return;
 }
 
 static int ff_dc_haptic_play(struct input_dev *input, void *data,
@@ -137,7 +149,7 @@ static void haptic_work(struct work_struct *work)
 		vib_en(FF_DC_VIBRATOR_DISABLE);
 }
 
-#if defined(CONFIG_MACH_WC1) || defined(CONFIG_MACH_VOLT)
+#if defined(CONFIG_MACH_WC1) || defined(CONFIG_MACH_VOLT) || defined(CONFIG_MACH_VOLT_NE)
 static ssize_t motor_control_show_motor_on(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	vib_en(FF_DC_VIBRATOR_ENABLE);
@@ -151,7 +163,7 @@ static ssize_t motor_control_show_motor_off(struct device *dev, struct device_at
 }
 #endif
 
-#if defined (CONFIG_MACH_WC1) || defined(CONFIG_MACH_VOLT)
+#if defined (CONFIG_MACH_WC1) || defined(CONFIG_MACH_VOLT) || defined(CONFIG_MACH_VOLT_NE)
 static DEVICE_ATTR(motor_on, S_IRUGO, motor_control_show_motor_on, NULL);
 static DEVICE_ATTR(motor_off, S_IRUGO, motor_control_show_motor_off, NULL);
 
@@ -199,6 +211,7 @@ static int ff_dc_vibrator_probe(struct platform_device *pdev)
 	hap_data->dev = &pdev->dev;
 	hap_data->input_dev = input_dev;
 	INIT_WORK(&hap_data->work, haptic_work);
+	mutex_init(&hap_data->lock);
 	hap_data->input_dev->name = "ff_dc_haptic";
 	hap_data->input_dev->dev.parent = &pdev->dev;
 	hap_data->input_dev->close = ff_dc_haptic_close;
@@ -285,17 +298,32 @@ MODULE_DEVICE_TABLE(of, haptic_dt_ids);
 static int ff_dc_vibrator_suspend(struct platform_device *pdev,
 			pm_message_t state)
 {
+	int err = 0;
+
 	pr_info("[VIB] %s\n", __func__);
+
+	mutex_lock(&g_hap_data->lock);
 	if (g_hap_data != NULL) {
 		cancel_work_sync(&g_hap_data->work);
 	}
 
+	if (regulator_is_enabled(g_hap_data->regulator)) {
+		pr_info("[VIB] %s - disable regulator during suspend\n", __func__);
+		err = regulator_disable(g_hap_data->regulator);
+		if (err) {
+			pr_info("[VIB] %s - regulator_disable fail\n", __func__);
+		}
+	}
+	is_suspend = true;
+	mutex_unlock(&g_hap_data->lock);
 	return 0;
 }
 
 static int ff_dc_vibrator_resume(struct platform_device *pdev)
 {
 	pr_info("[VIB] %s\n", __func__);
+
+	is_suspend = false;
 
 	return 0;
 }

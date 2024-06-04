@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013, Samsung Electronics Co. Ltd. All Rights Reserved.
+ *  Copyright (C) 2015, Samsung Electronics Co. Ltd. All Rights Reserved.
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -13,8 +13,8 @@
  *
  */
 
-#ifndef __SSP_SENSORHUB__
-#define __SSP_SENSORHUB__
+#ifndef __SSP_SENSORHUB_H__
+#define __SSP_SENSORHUB_H__
 
 #include <linux/completion.h>
 #include <linux/kfifo.h>
@@ -36,7 +36,7 @@
 #define BIN_PATH_SIZE			100
 
 #define SENSORHUB_IOCTL_MAGIC		'S'
-#define IOCTL_READ_BIG_CONTEXT_DATA	_IOR(SENSORHUB_IOCTL_MAGIC, 3, char *)
+#define IOCTL_READ_BIG_CONTEXT_DATA	_IOR(SENSORHUB_IOCTL_MAGIC, 3, int)
 
 #define sensorhub_info(str, args...) \
 	pr_info("[SSP]: %s - " str, __func__, ##args)
@@ -69,6 +69,7 @@ struct ssp_sensorhub_data {
 	int pcm_cnt;
 	wait_queue_head_t sensorhub_wq;
 	spinlock_t sensorhub_lock;
+	struct mutex big_events_lock;
 };
 
 int ssp_sensorhub_pcm_dump(struct ssp_sensorhub_data *hub_data);

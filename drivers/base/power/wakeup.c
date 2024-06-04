@@ -17,10 +17,9 @@
 #include <trace/events/power.h>
 
 #include "power.h"
-#ifdef CONFIG_SLEEP_MONITOR
-#include <linux/power/sleep_monitor.h>
-#include <linux/power/slp_mon_ws_dev.h>
-#include <linux/ktime.h>
+
+#ifdef CONFIG_WS_HISTORY
+#include <linux/power/ws_history.h>
 #endif
 
 /*
@@ -402,6 +401,9 @@ static void wakeup_source_activate(struct wakeup_source *ws)
 	/* Increment the counter of events in progress. */
 	cec = atomic_inc_return(&combined_event_count);
 
+	if (ws->name == NULL)
+		WARN_ON(1);
+
 	trace_wakeup_source_activate(ws->name, cec);
 }
 
@@ -472,8 +474,8 @@ static void update_prevent_sleep_time(struct wakeup_source *ws, ktime_t now)
 {
 	ktime_t delta = ktime_sub(now, ws->start_prevent_time);
 	ws->prevent_sleep_time = ktime_add(ws->prevent_sleep_time, delta);
-#ifdef CONFIG_PM_SLEEP_HISTORY
-	ws->prevent_time = delta;
+#ifdef CONFIG_WS_HISTORY
+	add_ws_history(ws->name, delta);
 #endif
 }
 #else
@@ -721,170 +723,14 @@ bool pm_wakeup_pending(void)
 	return ret;
 }
 
-#ifdef CONFIG_SLEEP_MONITOR
-int sleep_monitor_wakeup_sources(char **name, ktime_t *prevent_time)
+void pm_get_inpr_count(unsigned int *count, unsigned int *in_progress)
 {
-	struct wakeup_source *ws;
-	struct wakeup_source *temp_ws;
-	const int ws_count = 4;
-	int active_count = 0, array_count = 0;
-	int i = 0, min_idx = 0, min_val = 0;
+	unsigned int cnt, inpr;
 
-	rcu_read_lock();
-	list_for_each_entry_rcu(ws, &wakeup_sources, entry) {
-		WARN_ON(!ws);
-		if (ws) {
-			if (ws->active && active_count < ws_count) {
-				prevent_time[active_count] = ws->prevent_time;
-				strncpy(name[active_count], ws->name, SLEEP_MON_WS_NAME_LENGTH);
-				name[active_count++][SLEEP_MON_WS_NAME_LENGTH - 1] = 0;
-				break;
-			}
-		}
-	}
-	rcu_read_unlock();
-
-	array_count = active_count;
-
-	if (active_count < ws_count) {
-		rcu_read_lock();
-		list_for_each_entry_rcu(ws, &wakeup_sources, entry) {
-			WARN_ON(!ws);
-			if (ws) {
-				if (!ws->active && (ktime_to_ms(ws->prevent_time) != 0)) {
-					if (array_count < ws_count) {
-						prevent_time[array_count] = ws->prevent_time;
-						strncpy(name[array_count], ws->name,
-												SLEEP_MON_WS_NAME_LENGTH);
-						name[array_count++][SLEEP_MON_WS_NAME_LENGTH - 1] = 0;
-					} else {
-						temp_ws = ws;
-						min_idx = active_count;
-						min_val = ktime_to_ms(prevent_time[min_idx]);
-
-						for (i = active_count + 1; i < ws_count; i++) {
-							if (min_val > ktime_to_ms(prevent_time[i])) {
-								min_idx = i;
-								min_val = ktime_to_ms(prevent_time[i]);
-							}
-						}
-
-						if (min_val < ktime_to_ms(temp_ws->prevent_time)) {
-							prevent_time[min_idx] = temp_ws->prevent_time;
-							strncpy(name[min_idx], temp_ws->name, SLEEP_MON_WS_NAME_LENGTH);
-							name[min_idx][SLEEP_MON_WS_NAME_LENGTH - 1] = 0;
-						}
-					}
-				}
-			}
-		}
-		rcu_read_unlock();
-	}
-
-	return (array_count > ws_count) ? ws_count : array_count;
+	split_counters(&cnt, &inpr);
+	*count = cnt;
+	*in_progress = inpr;
 }
-#endif
-
-#ifdef CONFIG_PM_SLEEP_HISTORY
-bool pm_get_last_wakeup_sources(struct wakeup_source **ws_array,  int ws_count)
-{
-	unsigned int ret = 0;
-	int active_count = 0, array_count = 0;
-	struct wakeup_source *ws;
-	struct wakeup_source *long_activity_ws = NULL;
-	ktime_t zero = ktime_set(0, 0);
-	int i;
-
-	rcu_read_lock();
-	list_for_each_entry_rcu(ws, &wakeup_sources, entry) {
-		WARN_ON(!ws);
-		if (ws) {
-			if (ws->active && active_count < ws_count)
-				*(&ws_array[active_count++]) = ws;
-		}
-	}
-	array_count = active_count;
-
-	if (active_count < ws_count)
-		list_for_each_entry_rcu(ws, &wakeup_sources, entry) {
-			WARN_ON(!ws);
-			if (ws) {
-				if (!ws->active && !(ktime_equal(ws->prevent_time, zero))) {
-					if (array_count < ws_count)
-						*(&ws_array[array_count++]) = ws;
-					else {
-						long_activity_ws = ws;
-						for ( i = active_count; i < ws_count; i++) {
-							if (ktime_to_ns(long_activity_ws->prevent_time) >
-								ktime_to_ns((*(&ws_array[i]))->prevent_time))
-								swap(*(&ws_array[i]), long_activity_ws);
-						}
-					}
-				}
-			}
-		}
-
-	if (active_count > 1)
-		ret = 1;
-	rcu_read_unlock();
-
-	return ret;
-}
-
-bool pm_get_last_wakeup_source(struct wakeup_source **last_ws)
-{
-	unsigned int ret = 0;
-	struct wakeup_source *ws;
-	int active_count = 0;
-	struct wakeup_source *last_activity_ws = NULL;
-	struct wakeup_source *only_activity_ws = NULL;
-
-	rcu_read_lock();
-	list_for_each_entry_rcu(ws, &wakeup_sources, entry) {
-		WARN_ON(!ws);
-		if (ws) {
-			if (ws->active) {
-				active_count++;
-				if (active_count == 1)
-					only_activity_ws = ws;
-			} else if (active_count == 0 &&
-				   (!last_activity_ws ||
-					ktime_to_ns(ws->last_time) >
-					ktime_to_ns(last_activity_ws->last_time))) {
-				last_activity_ws = ws;
-			}
-		}
-	}
-
-	if (active_count == 0 && last_activity_ws) {
-		*last_ws = last_activity_ws;
-		ret = 1;
-	} else if (active_count == 1) {
-		*last_ws = only_activity_ws;
-		ret = 1;
-	}
-	rcu_read_unlock();
-
-	return ret;
-}
-
-void pm_del_prevent_sleep_time(void)
-{
-	struct wakeup_source *ws;
-
-	rcu_read_lock();
-	list_for_each_entry_rcu(ws, &wakeup_sources, entry) {
-		WARN_ON(!ws);
-		if (ws) {
-			if (!ws->active)
-				ws->prevent_time  =  ktime_set(0, 0);
-		}
-	}
-	rcu_read_unlock();
-
-	return;
-}
-#endif
 
 /**
  * pm_get_wakeup_count - Read the number of registered wakeup events.
@@ -993,6 +839,7 @@ static int print_wakeup_source_stats(struct seq_file *m,
 	ktime_t active_time;
 	ktime_t prevent_sleep_time;
 	int ret;
+	char ws_name[21] = {0};
 
 	spin_lock_irqsave(&ws->lock, flags);
 
@@ -1015,9 +862,10 @@ static int print_wakeup_source_stats(struct seq_file *m,
 		active_time = ktime_set(0, 0);
 	}
 
-	ret = seq_printf(m, "%-12s\t%lu\t\t%lu\t\t%lu\t\t%lu\t\t"
-			"%lld\t\t%lld\t\t%lld\t\t%lld\t\t%lld\n",
-			ws->name, active_count, ws->event_count,
+	snprintf(ws_name, 20, ws->name);
+	ret = seq_printf(m, "%-20s %12lu    %11lu     %12lu    %12lu    "
+			"%12lld    %10lld      %8lld        %11lld     %20lld\n",
+			ws_name, active_count, ws->event_count,
 			ws->wakeup_count, ws->expire_count,
 			ktime_to_ms(active_time), ktime_to_ms(total_time),
 			ktime_to_ms(max_time), ktime_to_ms(ws->last_time),
@@ -1036,9 +884,9 @@ static int wakeup_sources_stats_show(struct seq_file *m, void *unused)
 {
 	struct wakeup_source *ws;
 
-	seq_puts(m, "name\t\tactive_count\tevent_count\twakeup_count\t"
-		"expire_count\tactive_since\ttotal_time\tmax_time\t"
-		"last_change\tprevent_suspend_time\n");
+	seq_puts(m, "name                 active_count    event_count     "
+		"wakeup_count    expire_count    active_since    total_time      "
+		"max_time        last_change     prevent_suspend_time\n");
 
 	rcu_read_lock();
 	list_for_each_entry_rcu(ws, &wakeup_sources, entry)

@@ -82,3 +82,4 @@ config SENSORS_K6DS3TR
 	   This option enables accel & gyro sensors using K6DS3TR driver.
 
 source "drivers/sensors/mpu6500/Kconfig"
+source "drivers/sensors/lps22hb/Kconfig"

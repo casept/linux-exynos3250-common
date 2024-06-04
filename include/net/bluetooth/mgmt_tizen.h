@@ -137,9 +137,9 @@ struct mgmt_cp_le_conn_update {
 
 #define MGMT_OP_SET_MANUFACTURER_DATA		(TIZEN_OP_CODE_BASE + 0x0e)
 struct mgmt_cp_set_manufacturer_data {
-	__u8 data[28];
+	__u8 data[100];
 } __packed;
-#define MGMT_SET_MANUFACTURER_DATA_SIZE		28
+#define MGMT_SET_MANUFACTURER_DATA_SIZE		100
 
 #define MGMT_OP_LE_SET_SCAN_PARAMS		(TIZEN_OP_CODE_BASE + 0x0f)
 struct mgmt_cp_le_set_scan_params {
@@ -165,6 +165,12 @@ struct mgmt_rp_get_adv_tx_power {
 	__s8 adv_tx_power;
 } __packed;
 
+#define MGMT_OP_SET_STREAMING_MODE		(TIZEN_OP_CODE_BASE + 0x12)
+struct mgmt_cp_set_streaming_mode {
+	uint8_t streaming_mode;
+	bdaddr_t bdaddr;
+} __packed;
+#define MGMT_SET_STREAMING_MODE_SIZE		7
 
 /* BEGIN TIZEN_Bluetooth :: name update changes */
 #define MGMT_EV_DEVICE_NAME_UPDATE		(TIZEN_EV_BASE + 0x01)

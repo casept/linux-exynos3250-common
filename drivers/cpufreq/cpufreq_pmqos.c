@@ -44,6 +44,9 @@ static int atoi(const char *str)
 #elif defined(CONFIG_MACH_VOLT)
 #include "cpufreq_pmqos_volt.c"
 #define DEVICE_NAME "VOLT"
+#elif defined(CONFIG_MACH_VOLT_NE)
+#include "cpufreq_pmqos_volt.c"
+#define DEVICE_NAME "VOLT"
 #else
 #include "cpufreq_pmqos_volt.c"
 #define DEVICE_NAME "VOLT"

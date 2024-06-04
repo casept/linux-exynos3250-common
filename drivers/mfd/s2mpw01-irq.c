@@ -24,14 +24,8 @@
 #if defined(CONFIG_FUELGAUGE_S2MPW01)
 #include <linux/battery/fuelgauge/s2mpw01_fuelgauge.h>
 #endif
-#ifdef CONFIG_SLEEP_MONITOR
-#include <linux/power/slp_mon_irq_dev.h>
-#endif
-#ifdef CONFIG_PM_SLEEP_HISTORY
-#include <linux/power/sleep_history.h>
-#endif
-#ifdef CONFIG_ENERGY_MONITOR
-#include <linux/power/energy_monitor.h>
+#ifdef CONFIG_IRQ_HISTORY
+#include <linux/power/irq_history.h>
 #endif
 
 static const u8 s2mpw01_mask_reg[] = {
@@ -186,7 +180,6 @@ static irqreturn_t s2mpw01_irq_thread(int irq, void *data)
 	unsigned int irq_src;
 	unsigned int chg_st1;
 	int i, ret;
-	short is_find = 0;
 
 	ret = sec_reg_read(s2mpw01, S2MPW01_PMIC_REG_INTSRC, &irq_src);
 	if (ret) {
@@ -218,30 +211,6 @@ static irqreturn_t s2mpw01_irq_thread(int irq, void *data)
 			else
 				irq_reg[PMIC_INT1] |= 0x10;
 		}
-
-		if (g_check_pmic_int == 1) {
-			if ((irq_reg[PMIC_INT1] & 0x02) | (irq_reg[PMIC_INT1] & 0x01)) {
-				pr_info("Resume caused by key_power\n");
-#ifdef CONFIG_SLEEP_MONITOR
-				add_slp_mon_irq_list(irq, "key_power");
-#endif
-			} else if ((irq_reg[PMIC_INT1] & 0x04) | (irq_reg[PMIC_INT1] & 0x08)) {
-				pr_info("Resume caused by jig\n");
-#ifdef CONFIG_SLEEP_MONITOR
-				add_slp_mon_irq_list(irq, "jig");
-#endif
-			} else if ((irq_reg[PMIC_INT2] & 0x02) | (irq_reg[PMIC_INT2] & 0x04)) {
-				pr_info("Resume caused by pmic-rtc\n");
-#ifdef CONFIG_SLEEP_MONITOR
-				add_slp_mon_irq_list(irq, "pmic-rtc");
-#endif
-			} else {
-				pr_info("Resume caused by other-pmic-int\n");
-#ifdef CONFIG_SLEEP_MONITOR
-				add_slp_mon_irq_list(irq, "other-pmic-int");
-#endif
-			}
-		}
 	}
 #ifdef CONFIG_CHARGER_S2MPW01
 	if (irq_src & S2MPW01_IRQSRC_CHG) {
@@ -269,21 +238,14 @@ static irqreturn_t s2mpw01_irq_thread(int irq, void *data)
 	for (i = 0; i < S2MPW01_IRQ_NR; i++) {
 		if (irq_reg[s2mpw01_irqs[i].group] & s2mpw01_irqs[i].mask) {
 			handle_nested_irq(s2mpw01->irq_base + i);
-			if (is_find == 0 && g_check_pmic_int == 1) {
-#ifdef CONFIG_PM_SLEEP_HISTORY
-{
-				int slp_his_irq = s2mpw01->irq_base + i;
-				sleep_history_marker(SLEEP_HISTORY_WAKEUP_IRQ, NULL, (void *)&slp_his_irq);
-}
-#endif
-#ifdef CONFIG_ENERGY_MONITOR
-				energy_monitor_record_wakeup_reason(s2mpw01->irq_base + i);
-#endif
-				is_find = 1;
+#ifdef CONFIG_IRQ_HISTORY
+			if (get_irq_history_flag() == IRQ_HISTORY_S2MPW01_IRQ) {
+				add_irq_history(s2mpw01->irq_base + i, NULL);
+				clear_irq_history_flag();
 			}
+#endif
 		}
 	}
-	g_check_pmic_int = 0;
 
 	return IRQ_HANDLED;
 }

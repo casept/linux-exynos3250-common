@@ -1,8 +1,6 @@
 /*
- * To log which interrupt wake AP up.
- *
- * Copyright (C) 2015 SAMSUNG, Inc.
- * Sanghyeon Lee <sirano06.lee@samsung.com>
+ * Copyright (C) 2016 SAMSUNG, Inc.
+ * Hunsup Jung<hunsup.jung@samsung.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -15,20 +13,19 @@
  * more details.
  */
 
-#ifndef _SLP_MON_IRQ_DEV_H
-#define _SLP_MON_IRQ_DEV_H
+#ifndef _WS_HISTORY_H
+#define _WS_HISTORY_H
 
-enum SLEEP_MON_IRQ_DEV_STATUS {
-	SLP_MON_IRQ_NOT_ACTIVE = 0,
-	SLP_MON_IRQ_ACTIVE = 1,
-};
+#define WS_HISTORY_ARRAY_SIZE	4
+#define WS_HISTORY_NAME_LENGTH	16
 
-#define SLEEP_MON_IRQ_NAME_LENGTH 15
-#define UNKNOWN_IRQ_NAME "UNKNOWN"
-#define UNKNOWN_IRQ_NAME_LENGTH 7
+#ifdef CONFIG_SLEEP_MONITOR
+#define SLP_MON_TIME_INTERVAL_MS	60000
+#define SLP_MON_WS_IDX_BIT			24
+#define SLP_MON_WS_TIME_MAX			(BIT(SLP_MON_WS_IDX_BIT) - 1)
+#endif
 
-extern int add_slp_mon_irq_list(int irq, char *name);
+extern void update_ws_history_prv_time(void);
+extern int add_ws_history(const char *name, ktime_t prevent_time);
 
-#endif /* _SLP_MON_IRQ_DEV_H */
-
-
+#endif /* _WS_HISTORY_H */

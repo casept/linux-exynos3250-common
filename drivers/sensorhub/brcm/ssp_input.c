@@ -324,13 +324,22 @@ void report_light_data(struct ssp_data *data, struct sensor_value *lightdata)
 
 	data->lux = light_get_lux(ch0_raw,  ch1_raw, lightdata->gain);
 	input_report_rel(data->light_input_dev, REL_RX, data->lux + 1);
+
+	input_report_rel(data->light_input_dev, (REL_RX + 1),
+		(lightdata->timestamp & 0xffff000000000000) >> 48);
+	input_report_rel(data->light_input_dev, (REL_RX + 2),
+		(lightdata->timestamp & 0x0000ffff00000000) >> 32);
+	input_report_rel(data->light_input_dev, (REL_RX + 3),
+		(lightdata->timestamp & 0x00000000ffff0000) >> 16);
+	input_report_rel(data->light_input_dev, (REL_RX + 4),
+		(lightdata->timestamp & 0x000000000000ffff));
 	input_sync(data->light_input_dev);
 
 #ifdef SSP_DEBUG_LOG
-	pr_info("[SSP]%s, lux=%d, ch0=[%d %d]=%d, ch1=[%d %d]=%d, gian=%d\n",
+	pr_info("[SSP]%s, lux=%d, ch0=[%d %d]=%d, ch1=[%d %d]=%d, gian=%d, time=%lld\n",
 		__func__, data->lux, lightdata->ch0_lower, lightdata->ch0_upper,
 		ch0_raw, lightdata->ch1_lower, lightdata->ch1_upper, ch1_raw,
-		lightdata->gain);
+		lightdata->gain, lightdata->timestamp);
 #endif
 }
 #elif defined(CONFIG_SENSORS_SSP_CM3323)
@@ -349,11 +358,20 @@ void report_light_data(struct ssp_data *data, struct sensor_value *lightdata)
 		data->buf[LIGHT_SENSOR].b + 1);
 	input_report_rel(data->light_input_dev, REL_MISC,
 		data->buf[LIGHT_SENSOR].w + 1);
+
+	input_report_rel(data->light_input_dev, (REL_MISC + 1),
+		(lightdata->timestamp & 0xffff000000000000) >> 48);
+	input_report_rel(data->light_input_dev, (REL_MISC + 2),
+		(lightdata->timestamp & 0x0000ffff00000000) >> 32);
+	input_report_rel(data->light_input_dev, (REL_MISC + 3),
+		(lightdata->timestamp & 0x00000000ffff0000) >> 16);
+	input_report_rel(data->light_input_dev, (REL_MISC + 4),
+		(lightdata->timestamp & 0x000000000000ffff));
 	input_sync(data->light_input_dev);
 
 #ifdef SSP_DEBUG_LOG
-	pr_info("[SSP]%s, r=%d, g=%d, b=%d, w=%d\n", __func__,
-		lightdata->r, lightdata->g, lightdata->b, lightdata->w);
+	pr_info("[SSP]%s, r=%d, g=%d, b=%d, w=%d time=%lld\n", __func__,
+		lightdata->r, lightdata->g, lightdata->b, lightdata->w, lightdata->timestamp);
 #endif
 }
 #endif
@@ -504,6 +522,7 @@ void report_hrm_raw_data(struct ssp_data *data, struct sensor_value *hrmdata)
 		data->buf[HRM_RAW_SENSOR].ch_b_y1 + 1);
 	input_report_rel(data->hrm_raw_input_dev, REL_MISC,
 		data->buf[HRM_RAW_SENSOR].ch_b_y2 + 1);
+
 	input_report_rel(data->hrm_raw_input_dev, REL_MISC + 1,
 		(hrmdata->timestamp & 0xffff000000000000) >> 48);
 	input_report_rel(data->hrm_raw_input_dev, REL_MISC + 2,
@@ -556,6 +575,7 @@ void report_hrm_lib_data(struct ssp_data *data, struct sensor_value *hrmdata)
 		data->buf[HRM_LIB_SENSOR].rri + 1);
 	input_report_rel(data->hrm_lib_input_dev, REL_Z,
 		data->buf[HRM_LIB_SENSOR].snr + 1);
+
 	input_report_rel(data->hrm_lib_input_dev, REL_Z + 1,
 		(hrmdata->timestamp & 0xffff000000000000) >> 48);
 	input_report_rel(data->hrm_lib_input_dev, REL_Z + 2,
@@ -592,14 +612,23 @@ void report_front_hrm_raw_data(struct ssp_data *data,
 
 	input_report_rel(data->front_hrm_raw_input_dev, REL_X, ir_data + 1);
 	input_report_rel(data->front_hrm_raw_input_dev, REL_Y, red_data + 1);
+
+	input_report_rel(data->front_hrm_raw_input_dev, REL_Y + 1,
+		(hrmdata->timestamp & 0xffff000000000000) >> 48);
+	input_report_rel(data->front_hrm_raw_input_dev, REL_Y + 2,
+		(hrmdata->timestamp & 0x0000ffff00000000) >> 32);
+	input_report_rel(data->front_hrm_raw_input_dev, REL_Y + 3,
+		(hrmdata->timestamp & 0x00000000ffff0000) >> 16);
+	input_report_rel(data->front_hrm_raw_input_dev, REL_Y + 4,
+		hrmdata->timestamp & 0x000000000000ffff);
 	input_sync(data->front_hrm_raw_input_dev);
 
 #ifdef SSP_DEBUG_LOG
-	pr_info("[SSP]%s, [%d %d %d : %d] [%d %d %d : %d]\n", __func__,
+	pr_info("[SSP]%s, [%d %d %d : %d] [%d %d %d : %d] time=%lld\n", __func__,
 		hrmdata->front_hrm_raw[0], hrmdata->front_hrm_raw[1],
 		hrmdata->front_hrm_raw[2], ir_data + 1,
 		hrmdata->front_hrm_raw[3], hrmdata->front_hrm_raw[4],
-		hrmdata->front_hrm_raw[5], red_data + 1);
+		hrmdata->front_hrm_raw[5], red_data + 1, hrmdata->timestamp);
 #endif
 }
 #endif
@@ -911,6 +940,15 @@ int initialize_input_dev(struct ssp_data *data)
 	input_set_capability(data->acc_input_dev, EV_REL, REL_Y);
 	input_set_capability(data->acc_input_dev, EV_REL, REL_Z);
 
+	/* for timestemp reporting with batching mode */
+	input_set_capability(data->acc_input_dev, EV_REL, (REL_Z + 1));
+	input_set_capability(data->acc_input_dev, EV_REL, (REL_Z + 2));
+	input_set_capability(data->acc_input_dev, EV_REL, (REL_Z + 3));
+	input_set_capability(data->acc_input_dev, EV_REL, (REL_Z + 4));
+
+	/* for considering batching condition */
+	input_set_events_per_packet(data->acc_input_dev, 512);
+
 	iRet = input_register_device(data->acc_input_dev);
 	if (iRet < 0) {
 		input_free_device(data->acc_input_dev);
@@ -928,6 +966,15 @@ int initialize_input_dev(struct ssp_data *data)
 	input_set_capability(data->gyro_input_dev, EV_REL, REL_RX);
 	input_set_capability(data->gyro_input_dev, EV_REL, REL_RY);
 	input_set_capability(data->gyro_input_dev, EV_REL, REL_RZ);
+
+	/* for timestemp reporting with batching mode */
+	input_set_capability(data->gyro_input_dev, EV_REL, (REL_RZ + 1));
+	input_set_capability(data->gyro_input_dev, EV_REL, (REL_RZ + 2));
+	input_set_capability(data->gyro_input_dev, EV_REL, (REL_RZ + 3));
+	input_set_capability(data->gyro_input_dev, EV_REL, (REL_RZ + 4));
+
+	/* for considering batching condition */
+	input_set_events_per_packet(data->gyro_input_dev, 512);
 
 	iRet = input_register_device(data->gyro_input_dev);
 	if (iRet < 0) {
@@ -1014,6 +1061,15 @@ int initialize_input_dev(struct ssp_data *data)
 	input_set_capability(data->pressure_input_dev, EV_REL, REL_DIAL);
 	input_set_capability(data->pressure_input_dev, EV_REL, REL_WHEEL);
 
+	/* for timestemp reporting */
+	input_set_capability(data->pressure_input_dev, EV_REL, (REL_WHEEL + 1));
+	input_set_capability(data->pressure_input_dev, EV_REL, (REL_WHEEL + 2));
+	input_set_capability(data->pressure_input_dev, EV_REL, (REL_WHEEL + 3));
+	input_set_capability(data->pressure_input_dev, EV_REL, (REL_WHEEL + 4));
+
+	/* for considering batching condition */
+	input_set_events_per_packet(data->pressure_input_dev, 512);
+
 	iRet = input_register_device(data->pressure_input_dev);
 	if (iRet < 0) {
 		input_free_device(data->pressure_input_dev);
@@ -1030,11 +1086,23 @@ int initialize_input_dev(struct ssp_data *data)
 	data->light_input_dev->name = "light_sensor";
 #if defined(CONFIG_SENSORS_SSP_TSL2584)
 	input_set_capability(data->light_input_dev, EV_REL, REL_RX);
+
+	/* for timestemp reporting */
+	input_set_capability(data->light_input_dev, EV_REL, (REL_RX + 1));
+	input_set_capability(data->light_input_dev, EV_REL, (REL_RX + 2));
+	input_set_capability(data->light_input_dev, EV_REL, (REL_RX + 3));
+	input_set_capability(data->light_input_dev, EV_REL, (REL_RX + 4));
 #elif defined(CONFIG_SENSORS_SSP_CM3323)
 	input_set_capability(data->light_input_dev, EV_REL, REL_HWHEEL);
 	input_set_capability(data->light_input_dev, EV_REL, REL_DIAL);
 	input_set_capability(data->light_input_dev, EV_REL, REL_WHEEL);
 	input_set_capability(data->light_input_dev, EV_REL, REL_MISC);
+
+	/* for timestemp reporting */
+	input_set_capability(data->light_input_dev, EV_REL, (REL_MISC + 1));
+	input_set_capability(data->light_input_dev, EV_REL, (REL_MISC + 2));
+	input_set_capability(data->light_input_dev, EV_REL, (REL_MISC + 3));
+	input_set_capability(data->light_input_dev, EV_REL, (REL_MISC + 4));
 #endif
 
 	iRet = input_register_device(data->light_input_dev);
@@ -1137,6 +1205,12 @@ int initialize_input_dev(struct ssp_data *data)
 	input_set_capability(data->hrm_raw_input_dev, EV_REL, REL_WHEEL);
 	input_set_capability(data->hrm_raw_input_dev, EV_REL, REL_MISC);
 
+	/* for timestemp reporting */
+	input_set_capability(data->hrm_raw_input_dev, EV_REL, (REL_MISC + 1));
+	input_set_capability(data->hrm_raw_input_dev, EV_REL, (REL_MISC + 2));
+	input_set_capability(data->hrm_raw_input_dev, EV_REL, (REL_MISC + 3));
+	input_set_capability(data->hrm_raw_input_dev, EV_REL, (REL_MISC + 4));
+
 	iRet = input_register_device(data->hrm_raw_input_dev);
 	if (iRet < 0) {
 		input_free_device(data->hrm_raw_input_dev);
@@ -1153,6 +1227,12 @@ int initialize_input_dev(struct ssp_data *data)
 	input_set_capability(data->hrm_lib_input_dev, EV_REL, REL_Y);
 	input_set_capability(data->hrm_lib_input_dev, EV_REL, REL_Z);
 
+	/* for timestemp reporting */
+	input_set_capability(data->hrm_lib_input_dev, EV_REL, (REL_Z + 1));
+	input_set_capability(data->hrm_lib_input_dev, EV_REL, (REL_Z + 2));
+	input_set_capability(data->hrm_lib_input_dev, EV_REL, (REL_Z + 3));
+	input_set_capability(data->hrm_lib_input_dev, EV_REL, (REL_Z + 4));
+
 	iRet = input_register_device(data->hrm_lib_input_dev);
 	if (iRet < 0) {
 		input_free_device(data->hrm_lib_input_dev);
@@ -1167,8 +1247,14 @@ int initialize_input_dev(struct ssp_data *data)
 		goto err_initialize_input_dev;
 
 	data->front_hrm_raw_input_dev->name = "front_hrm_raw_sensor";
-	input_set_capability(data->hrm_raw_input_dev, EV_REL, REL_X);
-	input_set_capability(data->hrm_raw_input_dev, EV_REL, REL_Y);
+	input_set_capability(data->front_hrm_raw_input_dev, EV_REL, REL_X);
+	input_set_capability(data->front_hrm_raw_input_dev, EV_REL, REL_Y);
+
+	/* for timestemp reporting */
+	input_set_capability(data->front_hrm_raw_input_dev, EV_REL, (REL_Y + 1));
+	input_set_capability(data->front_hrm_raw_input_dev, EV_REL, (REL_Y + 2));
+	input_set_capability(data->front_hrm_raw_input_dev, EV_REL, (REL_Y + 3));
+	input_set_capability(data->front_hrm_raw_input_dev, EV_REL, (REL_Y + 4));
 
 	iRet = input_register_device(data->front_hrm_raw_input_dev);
 	if (iRet < 0) {

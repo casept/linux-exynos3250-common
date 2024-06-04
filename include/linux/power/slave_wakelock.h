@@ -3,6 +3,7 @@
  *
  * Copyright (C) 2015 SAMSUNG, Inc.
  * Sanghyeon Lee <sirano06.lee@samsung.com>
+ * Hunsup Jung <hunsup.jung@samsung.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -15,40 +16,36 @@
  * more details.
  */
 
-#ifndef _SLP_MON_SLWL_DEV_H
-#define _SLP_MON_SLWL_DEV_H
+#ifndef _SLAVE_WAKELOCK_H
+#define _SLAVE_WAKELOCK_H
 
 #include <linux/ktime.h>
 
-#define SLEEP_MON_SLWL_ARRAY_SIZE 4
-#define SLEEP_MON_SLWL_NAME_LENGTH 15
+#define SLWL_ARRAY_SIZE 4
+#define SLWL_NAME_LENGTH 15
+#define SLWL_IDX_BIT 24
+#define SLWL_PREVENT_TIME_MAX BIT(SLWL_IDX_BIT) - 1
 
-#define SLEEP_MON_SLWL_IDX_BIT 24
-#define SLEEP_MON_SLWL_PREVENT_TIME_MAX BIT(SLEEP_MON_SLWL_IDX_BIT) - 1
-
-#ifdef CONFIG_SLEEP_MONITOR_SLAVE_WAKELOCK
+#ifdef CONFIG_SLAVE_WAKELOCK
 extern int add_slp_mon_slwl_list(char *name);
-extern int slp_mon_slwl_lock(const char *buf);
-extern int slp_mon_slwl_unlock(const char *buf);
+extern int slave_wake_lock(const char *buf);
+extern int slave_wake_unlock(const char *buf);
 #else
 static int add_slp_mon_slwl_list(char *name){}
-static int slp_mon_slwl_lock(const char *buf){}
-static int slp_mon_slwl_unlock(const char *buf){}
-#endif
+static int slave_wake_lock(const char *buf){}
+static int slave_wake_unlock(const char *buf){}
+#endif /* CONFIG_SLAVE_WAKELOCK */
 
 #ifdef CONFIG_ENERGY_MONITOR
 struct slp_mon_slave_wakelocks {
-	char slwl_name[SLEEP_MON_SLWL_NAME_LENGTH];
+	char slwl_name[SLWL_NAME_LENGTH];
 	ktime_t prevent_time;
 };
-
-#ifdef CONFIG_SLEEP_MONITOR_SLAVE_WAKELOCK
+#ifdef CONFIG_SLAVE_WAKELOCK
 void get_sleep_monitor_slave_wakelock(struct slp_mon_slave_wakelocks *slwl, int size);
-
 #else
 void get_sleep_monitor_slave_wakelock(struct slp_mon_slave_wakelocks *slwl, int size){}
 #endif
-#endif
+#endif /* CONFIG_ENERGY_MONITOR */
 
-#endif /* _SLP_MON_SLWL_DEV_H */
-
+#endif /* _SLAVE_WAKELOCK_H */

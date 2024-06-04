@@ -317,6 +317,7 @@ void reset_mcu(struct ssp_data *data)
 
 	func_dbg();
 	data->uResetCnt++;
+	data->bSspReady = false;
 	ssp_enable(data, false);
 	clean_pending_list(data);
 #if SSP_STATUS_MONITOR

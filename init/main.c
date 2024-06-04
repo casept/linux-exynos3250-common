@@ -86,10 +86,6 @@
 #include <linux/secgpio_dvs.h>
 #endif
 
-#ifdef CONFIG_SLEEP_MONITOR
-#include <linux/power/sleep_monitor.h>
-#endif
-
 #include "../arch/arm/mach-exynos/board-universal3250.h"
 
 static int kernel_init(void *);
@@ -820,14 +816,6 @@ static noinline int init_post(void)
 	/*	Caution : This function must be located in this position		*/
 	/********************************************************************************/
 	gpio_dvs_check_initgpio();
-#endif
-
-#ifdef CONFIG_SLEEP_MONITOR
-{
-	int pretty_group[SLEEP_MONITOR_GROUP_SIZE];
-	memset(pretty_group, 0, sizeof(int) * SLEEP_MONITOR_GROUP_SIZE);
-	sleep_monitor_get_pretty(pretty_group, SLEEP_MONITOR_CALL_INIT);
-}
 #endif
 
 	/* need to finish all async __init code before freeing the memory */

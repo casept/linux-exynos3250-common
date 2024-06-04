@@ -1,7 +1,7 @@
 /*
  * Broadcom Dongle Host Driver (DHD), common DHD core.
  *
- * Copyright (C) 1999-2016, Broadcom Corporation
+ * Copyright (C) 1999-2017, Broadcom Corporation
  * 
  *      Unless you and Broadcom execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
@@ -21,7 +21,7 @@
  * software in any way with any other Broadcom software provided under a license
  * other than the GPL, without Broadcom's express prior written consent.
  *
- * $Id: dhd_common.c 624289 2016-03-11 03:41:02Z $
+ * $Id: dhd_common.c 692786 2017-03-29 15:40:19Z $
  */
 #include <typedefs.h>
 #include <osl.h>
@@ -75,7 +75,9 @@ extern void htsf_update(struct dhd_info *dhd, void *data);
 int dhd_msg_level = DHD_ERROR_VAL;
 
 
+#if defined(WL_WIRELESS_EXT)
 #include <wl_iw.h>
+#endif 
 
 #ifdef SOFTAP
 char fw_path2[MOD_PARAM_PATHLEN];
@@ -1579,18 +1581,51 @@ fail:
 		MFREE(dhd->osh, arg_org, strlen(arg) + 1);
 }
 
+/* Packet filter section: extended filters have named offsets, add table here */
+typedef struct {
+	char *name;
+	uint16 base;
+} wl_pfbase_t;
+
+static wl_pfbase_t basenames[] = { WL_PKT_FILTER_BASE_NAMES };
+
+static int
+wl_pkt_filter_base_parse(char *name)
+{
+	uint i;
+	char *bname, *uname;
+
+	for (i = 0; i < ARRAYSIZE(basenames); i++) {
+		bname = basenames[i].name;
+		for (uname = name; *uname; bname++, uname++) {
+			if (*bname != bcm_toupper(*uname)) {
+				break;
+			}
+		}
+		if (!*uname && !*bname) {
+			break;
+		}
+	}
+
+	if (i < ARRAYSIZE(basenames)) {
+		return basenames[i].base;
+	} else {
+		return -1;
+	}
+}
+
 void
 dhd_pktfilter_offload_set(dhd_pub_t * dhd, char *arg)
 {
-	const char 			*str;
+	const char		*str;
 	wl_pkt_filter_t		pkt_filter;
 	wl_pkt_filter_t		*pkt_filterp;
 	int					buf_len;
 	int					str_len;
-	int 				rc;
+	int			rc;
 	uint32				mask_size;
 	uint32				pattern_size;
-	char				*argv[8], * buf = 0;
+	char				*argv[16], * buf = 0;
 	int					i = 0;
 	char				*arg_save = 0, *arg_org = 0;
 #define BUF_SIZE		2048
@@ -1654,50 +1689,170 @@ dhd_pktfilter_offload_set(dhd_pub_t * dhd, char *arg)
 	/* Parse filter type. */
 	pkt_filter.type = htod32(strtoul(argv[i], NULL, 0));
 
-	if (argv[++i] == NULL) {
-		DHD_ERROR(("Offset not provided\n"));
+	if ((pkt_filter.type == 0) || (pkt_filter.type == 1)) {
+		if (argv[++i] == NULL) {
+			DHD_ERROR(("Offset not provided\n"));
+			goto fail;
+		}
+
+		/* Parse pattern filter offset. */
+		pkt_filter.u.pattern.offset = htod32(strtoul(argv[i], NULL, 0));
+
+		if (argv[++i] == NULL) {
+			DHD_ERROR(("Bitmask not provided\n"));
+		    goto fail;
+		}
+
+		/* Parse pattern filter mask. */
+		mask_size =
+			htod32(wl_pattern_atoh(argv[i],
+			(char *) pkt_filterp->u.pattern.mask_and_pattern));
+
+		if (argv[++i] == NULL) {
+			DHD_ERROR(("Pattern not provided\n"));
+			goto fail;
+		}
+
+		/* Parse pattern filter pattern. */
+		pattern_size =
+			htod32(wl_pattern_atoh(argv[i],
+			(char *) &pkt_filterp->u.pattern.mask_and_pattern[mask_size]));
+
+		if (mask_size != pattern_size) {
+			DHD_ERROR(("Mask and pattern not the same size\n"));
+			goto fail;
+		}
+
+		pkt_filter.u.pattern.size_bytes = mask_size;
+		buf_len += WL_PKT_FILTER_FIXED_LEN;
+		buf_len += (WL_PKT_FILTER_PATTERN_FIXED_LEN + 2 * mask_size);
+
+		/* Keep-alive attributes are set in local	variable (keep_alive_pkt), and
+		 ** then memcpy'ed into buffer (keep_alive_pktp) since there is no
+		 ** guarantee that the buffer is properly aligned.
+		 */
+		memcpy((char *)pkt_filterp,
+			&pkt_filter,
+			WL_PKT_FILTER_FIXED_LEN + WL_PKT_FILTER_PATTERN_FIXED_LEN);
+	} else if ((pkt_filter.type == 2) || (pkt_filter.type == 6)) {
+		int list_cnt = 0;
+		char *endptr = '\0';
+		wl_pkt_filter_pattern_listel_t *pf_el = &pkt_filterp->u.patlist.patterns[0];
+
+		while (argv[++i] != NULL) {
+			/* Parse pattern filter base and offset. */
+			if (bcm_isdigit(*argv[i])) {
+				/* Numeric base */
+				rc = strtoul(argv[i], &endptr, 0);
+			} else {
+				endptr = strchr(argv[i], ':');
+				if (endptr) {
+					*endptr = '\0';
+					rc = wl_pkt_filter_base_parse(argv[i]);
+					if (rc == -1) {
+						printf("Invalid base %s\n", argv[i]);
+						goto fail;
+					}
+					*endptr = ':';
+				} else {
+					printf("Invalid [base:]offset format: %s\n", argv[i]);
+					goto fail;
+				}
+			}
+
+			if (*endptr == ':') {
+				pkt_filter.u.patlist.patterns[0].base_offs = htod16(rc);
+				rc = strtoul(endptr + 1, &endptr, 0);
+			} else {
+				/* Must have had a numeric offset only */
+				pkt_filter.u.patlist.patterns[0].base_offs = htod16(0);
+			}
+
+			if (*endptr) {
+				printf("Invalid [base:]offset format: %s\n", argv[i]);
+				goto fail;
+			}
+			if (rc > 0x0000FFFF) {
+				printf("Offset too large\n");
+				goto fail;
+			}
+			pkt_filter.u.patlist.patterns[0].rel_offs = htod16(rc);
+
+			/* Clear match_flag (may be set in parsing which follows) */
+			pkt_filter.u.patlist.patterns[0].match_flags = htod16(0);
+
+			/* Parse pattern filter mask and pattern directly into ioctl buffer */
+			if (argv[++i] == NULL) {
+				printf("Bitmask not provided\n");
+				goto fail;
+			}
+			rc = wl_pattern_atoh(argv[i], (char*)pf_el->mask_and_data);
+			if (rc == -1) {
+				printf("Rejecting: %s\n", argv[i]);
+				goto fail;
+			}
+			mask_size = htod16(rc);
+
+			if (argv[++i] == NULL) {
+				printf("Pattern not provided\n");
+				goto fail;
+			}
+
+			if (*argv[i] == '!') {
+				pkt_filter.u.patlist.patterns[0].match_flags =
+					htod16(WL_PKT_FILTER_MFLAG_NEG);
+				(argv[i])++;
+			}
+			if (argv[i] == '\0') {
+				printf("Pattern not provided\n");
+				goto fail;
+			}
+			rc = wl_pattern_atoh(argv[i], (char*)&pf_el->mask_and_data[rc]);
+			if (rc == -1) {
+				printf("Rejecting: %s\n", argv[i]);
+				goto fail;
+			}
+			pattern_size = htod16(rc);
+
+			if (mask_size != pattern_size) {
+				printf("Mask and pattern not the same size\n");
+				goto fail;
+			}
+
+			pkt_filter.u.patlist.patterns[0].size_bytes = mask_size;
+
+			/* Account for the size of this pattern element */
+			buf_len += WL_PKT_FILTER_PATTERN_LISTEL_FIXED_LEN + 2 * rc;
+
+			/* And the pattern element fields that were put in a local for
+			 * alignment purposes now get copied to the ioctl buffer.
+			 */
+			memcpy((char*)pf_el, &pkt_filter.u.patlist.patterns[0],
+				WL_PKT_FILTER_PATTERN_FIXED_LEN);
+
+			/* Move to next element location in ioctl buffer */
+			pf_el = (wl_pkt_filter_pattern_listel_t*)
+				((uint8*)pf_el + WL_PKT_FILTER_PATTERN_LISTEL_FIXED_LEN + 2 * rc);
+
+			/* Count list element */
+			list_cnt++;
+		}
+
+		/* Account for initial fixed size, and copy initial fixed fields */
+		buf_len += WL_PKT_FILTER_FIXED_LEN + WL_PKT_FILTER_PATTERN_LIST_FIXED_LEN;
+
+		/* Update list count and total size */
+		pkt_filter.u.patlist.list_cnt = list_cnt;
+		pkt_filter.u.patlist.PAD1[0] = 0;
+		pkt_filter.u.patlist.totsize = buf + buf_len - (char*)pkt_filterp;
+		pkt_filter.u.patlist.totsize -= WL_PKT_FILTER_FIXED_LEN;
+
+		memcpy((char *)pkt_filterp, &pkt_filter,
+			WL_PKT_FILTER_FIXED_LEN + WL_PKT_FILTER_PATTERN_LIST_FIXED_LEN);
+	} else {
+		DHD_ERROR(("Invalid filter type %d\n", pkt_filter.type));
 		goto fail;
 	}
-
-	/* Parse pattern filter offset. */
-	pkt_filter.u.pattern.offset = htod32(strtoul(argv[i], NULL, 0));
-
-	if (argv[++i] == NULL) {
-		DHD_ERROR(("Bitmask not provided\n"));
-		goto fail;
-	}
-
-	/* Parse pattern filter mask. */
-	mask_size =
-		htod32(wl_pattern_atoh(argv[i], (char *) pkt_filterp->u.pattern.mask_and_pattern));
-
-	if (argv[++i] == NULL) {
-		DHD_ERROR(("Pattern not provided\n"));
-		goto fail;
-	}
-
-	/* Parse pattern filter pattern. */
-	pattern_size =
-		htod32(wl_pattern_atoh(argv[i],
-	         (char *) &pkt_filterp->u.pattern.mask_and_pattern[mask_size]));
-
-	if (mask_size != pattern_size) {
-		DHD_ERROR(("Mask and pattern not the same size\n"));
-		goto fail;
-	}
-
-	pkt_filter.u.pattern.size_bytes = mask_size;
-	buf_len += WL_PKT_FILTER_FIXED_LEN;
-	buf_len += (WL_PKT_FILTER_PATTERN_FIXED_LEN + 2 * mask_size);
-
-	/* Keep-alive attributes are set in local	variable (keep_alive_pkt), and
-	** then memcpy'ed into buffer (keep_alive_pktp) since there is no
-	** guarantee that the buffer is properly aligned.
-	*/
-	memcpy((char *)pkt_filterp,
-	       &pkt_filter,
-	       WL_PKT_FILTER_FIXED_LEN + WL_PKT_FILTER_PATTERN_FIXED_LEN);
-
 	rc = dhd_wl_ioctl_cmd(dhd, WLC_SET_VAR, buf, buf_len, TRUE, 0);
 	rc = rc >= 0 ? 0 : rc;
 
@@ -2365,6 +2520,80 @@ int dhd_keep_alive_onoff(dhd_pub_t *dhd)
 	return res;
 }
 #endif /* defined(KEEP_ALIVE) */
+
+#define CSCAN_TLV_TYPE_SSID_IE	'S'
+/*
+ *  SSIDs list parsing from cscan tlv list
+ */
+int
+wl_parse_ssid_list_tlv(char** list_str, wlc_ssid_t* ssid, int max, int *bytes_left)
+{
+	char* str;
+	int idx = 0;
+
+	if ((list_str == NULL) || (*list_str == NULL) || (*bytes_left < 0)) {
+		DHD_ERROR(("%s error paramters\n", __FUNCTION__));
+		return -1;
+	}
+	str = *list_str;
+	while (*bytes_left > 0) {
+
+		if (str[0] != CSCAN_TLV_TYPE_SSID_IE) {
+			*list_str = str;
+			DHD_TRACE(("nssid=%d left_parse=%d %d\n", idx, *bytes_left, str[0]));
+			return idx;
+		}
+
+		/* Get proper CSCAN_TLV_TYPE_SSID_IE */
+		*bytes_left -= 1;
+		str += 1;
+
+		if (str[0] == 0) {
+			/* Broadcast SSID */
+			ssid[idx].SSID_len = 0;
+			memset((char*)ssid[idx].SSID, 0x0, DOT11_MAX_SSID_LEN);
+			*bytes_left -= 1;
+			str += 1;
+
+			DHD_TRACE(("BROADCAST SCAN  left=%d\n", *bytes_left));
+		}
+		else if (str[0] <= DOT11_MAX_SSID_LEN) {
+			/* Get proper SSID size */
+			ssid[idx].SSID_len = str[0];
+			*bytes_left -= 1;
+			str += 1;
+
+			/* Get SSID */
+			if (ssid[idx].SSID_len > *bytes_left) {
+				DHD_ERROR(("%s out of memory range len=%d but left=%d\n",
+				__FUNCTION__, ssid[idx].SSID_len, *bytes_left));
+				return -1;
+			}
+
+			memcpy((char*)ssid[idx].SSID, str, ssid[idx].SSID_len);
+
+			*bytes_left -= ssid[idx].SSID_len;
+			str += ssid[idx].SSID_len;
+
+			DHD_TRACE(("%s :size=%d left=%d\n",
+				(char*)ssid[idx].SSID, ssid[idx].SSID_len, *bytes_left));
+		}
+		else {
+			DHD_ERROR(("### SSID size more that %d\n", str[0]));
+			return -1;
+		}
+
+		if (idx++ >  max) {
+			DHD_ERROR(("%s number of SSIDs more that %d\n", __FUNCTION__, idx));
+			return -1;
+		}
+	}
+
+	*list_str = str;
+	return idx;
+}
+
+#if defined(WL_WIRELESS_EXT)
 /* Android ComboSCAN support */
 
 /*
@@ -2465,77 +2694,6 @@ wl_iw_parse_channel_list_tlv(char** list_str, uint16* channel_list,
 	return idx;
 }
 
-/*
- *  SSIDs list parsing from cscan tlv list
- */
-int
-wl_iw_parse_ssid_list_tlv(char** list_str, wlc_ssid_t* ssid, int max, int *bytes_left)
-{
-	char* str;
-	int idx = 0;
-
-	if ((list_str == NULL) || (*list_str == NULL) || (*bytes_left < 0)) {
-		DHD_ERROR(("%s error paramters\n", __FUNCTION__));
-		return -1;
-	}
-	str = *list_str;
-	while (*bytes_left > 0) {
-
-		if (str[0] != CSCAN_TLV_TYPE_SSID_IE) {
-			*list_str = str;
-			DHD_TRACE(("nssid=%d left_parse=%d %d\n", idx, *bytes_left, str[0]));
-			return idx;
-		}
-
-		/* Get proper CSCAN_TLV_TYPE_SSID_IE */
-		*bytes_left -= 1;
-		str += 1;
-
-		if (str[0] == 0) {
-			/* Broadcast SSID */
-			ssid[idx].SSID_len = 0;
-			memset((char*)ssid[idx].SSID, 0x0, DOT11_MAX_SSID_LEN);
-			*bytes_left -= 1;
-			str += 1;
-
-			DHD_TRACE(("BROADCAST SCAN  left=%d\n", *bytes_left));
-		}
-		else if (str[0] <= DOT11_MAX_SSID_LEN) {
-			/* Get proper SSID size */
-			ssid[idx].SSID_len = str[0];
-			*bytes_left -= 1;
-			str += 1;
-
-			/* Get SSID */
-			if (ssid[idx].SSID_len > *bytes_left) {
-				DHD_ERROR(("%s out of memory range len=%d but left=%d\n",
-				__FUNCTION__, ssid[idx].SSID_len, *bytes_left));
-				return -1;
-			}
-
-			memcpy((char*)ssid[idx].SSID, str, ssid[idx].SSID_len);
-
-			*bytes_left -= ssid[idx].SSID_len;
-			str += ssid[idx].SSID_len;
-
-			DHD_TRACE(("%s :size=%d left=%d\n",
-				(char*)ssid[idx].SSID, ssid[idx].SSID_len, *bytes_left));
-		}
-		else {
-			DHD_ERROR(("### SSID size more that %d\n", str[0]));
-			return -1;
-		}
-
-		if (idx++ >  max) {
-			DHD_ERROR(("%s number of SSIDs more that %d\n", __FUNCTION__, idx));
-			return -1;
-		}
-	}
-
-	*list_str = str;
-	return idx;
-}
-
 /* Parse a comma-separated list from list_str into ssid array, starting
  * at index idx.  Max specifies size of the ssid array.  Parses ssids
  * and returns updated idx; if idx >= max not all fit, the excess have
@@ -2616,6 +2774,8 @@ wl_iw_parse_channel_list(char** list_str, uint16* channel_list, int channel_num)
 	*list_str = str;
 	return num;
 }
+
+#endif 
 #if defined(DHD_8021X_DUMP)
 /* Parse EAPOL 4 way handshake messages */
 void

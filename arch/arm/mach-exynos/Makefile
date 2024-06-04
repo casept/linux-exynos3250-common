@@ -294,6 +294,25 @@ obj-$(CONFIG_MACH_VOLT)	+= sec_reboot.o
 obj-$(CONFIG_MACH_VOLT)	+= board-universal3250-gpio.o
 obj-$(CONFIG_MACH_VOLT)	+= board-tizen-nfc-lsi.o
 obj-$(CONFIG_MACH_VOLT)	+= board-orbis-ese.o
+
+obj-$(CONFIG_MACH_VOLT_NE)	+= mach-universal3250.o
+obj-$(CONFIG_MACH_VOLT_NE)	+= board-universal3250-clock.o
+obj-$(CONFIG_MACH_VOLT_NE)	+= board-universal3250-mmc.o
+obj-$(CONFIG_MACH_VOLT_NE)	+= board-volt_ne-power.o
+obj-$(CONFIG_MACH_VOLT_NE)	+= board-volt-input.o
+obj-$(CONFIG_MACH_VOLT_NE)	+= board-b2-vibrator.o
+obj-$(CONFIG_MACH_VOLT_NE)	+= board-tizen-display.o
+obj-$(CONFIG_MACH_VOLT_NE)	+= board-b2-usb.o
+obj-$(CONFIG_MACH_VOLT_NE)	+= board-volt_ne-battery.o
+obj-$(CONFIG_MACH_VOLT_NE)	+= board-volt-muic.o
+obj-$(CONFIG_MACH_VOLT_NE)	+= board-volt-sensor.o
+obj-$(CONFIG_MACH_VOLT_NE)	+= board-universal3250-media.o
+obj-$(CONFIG_MACH_VOLT_NE)	+= board-volt-thermistor.o
+obj-$(CONFIG_MACH_VOLT_NE)	+= sec_reboot.o
+obj-$(CONFIG_MACH_VOLT_NE)	+= board-universal3250-gpio.o
+obj-$(CONFIG_MACH_VOLT_NE)	+= board-tizen-nfc-lsi.o
+obj-$(CONFIG_MACH_VOLT_NE)	+= board-orbis-ese.o
+
 obj-$(CONFIG_SENSORS_SSP_BBD) += sec_gps_bcm4774.o
 
 obj-$(CONFIG_MACH_SMDK4212)		+= mach-smdk4x12.o
@@ -408,6 +427,7 @@ obj-$(CONFIG_BT_BCM4339)			+= board-bluetooth-bcm4339.o
 obj-$(CONFIG_WLAN)			+= board-tizen-wlan.o
 obj-$(CONFIG_MACH_WC1)	+= board-orbis-wlan-hw.o
 obj-$(CONFIG_MACH_VOLT)	+= board-volt-wlan-hw.o
+obj-$(CONFIG_MACH_VOLT_NE)	+= board-volt-wlan-hw.o
 obj-$(CONFIG_MACH_UNIVERSAL5260)	+= board-universal5260-sensor.o
 obj-$(CONFIG_MACH_UNIVERSAL5260)	+= board-universal5260-nfc.o
 
@@ -444,6 +464,9 @@ obj-$(CONFIG_MACH_SMARTKEY)	+= board-smartkey-battery.o
 else ifeq ($(CONFIG_MACH_VOLT),y)
 obj-$(CONFIG_SAMSUNG_MUIC)	+= sec-switch.o
 obj-$(CONFIG_MACH_VOLT)	+= sec-switch-volt.o
+else ifeq ($(CONFIG_MACH_VOLT_NE),y)
+obj-$(CONFIG_SAMSUNG_MUIC)	+= sec-switch.o
+obj-$(CONFIG_MACH_VOLT_NE)	+= sec-switch-volt.o
 else
 obj-$(CONFIG_SAMSUNG_MUIC)    += board-universal5260-mfd.o
 obj-$(CONFIG_SAMSUNG_MUIC)    += sec-switch.o
@@ -567,6 +590,8 @@ obj-$(CONFIG_SEC_THERMISTOR)	+= sec_thermistor_orbis.o
 else ifeq ($(CONFIG_MACH_SMARTKEY),y)
 obj-$(CONFIG_SEC_THERMISTOR)	+= sec_thermistor_orbis.o
 else ifeq ($(CONFIG_MACH_VOLT),y)
+obj-$(CONFIG_SEC_THERMISTOR)	+= sec_thermistor_orbis.o
+else ifeq ($(CONFIG_MACH_VOLT_NE),y)
 obj-$(CONFIG_SEC_THERMISTOR)	+= sec_thermistor_orbis.o
 else
 obj-$(CONFIG_SEC_THERMISTOR)	+= sec_thermistor.o

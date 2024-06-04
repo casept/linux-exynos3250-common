@@ -38,10 +38,11 @@
 
 static void get_timestamp(struct ssp_data *data, char *pchRcvDataFrame,
 		int *iDataIdx, struct sensor_value *sensorsdata,
-		struct ssp_time_diff *sensortime, int iSensorData)
+		struct ssp_time_diff *sensortime, int iSensorData, u16 total_cnt)
 {
 	unsigned int deltaTimeUs = 0;
 	u64 deltaTimeNs = 0;
+	u64 req_delta;
 
 	memset(&deltaTimeUs, 0, 4);
 	memcpy(&deltaTimeUs, pchRcvDataFrame + *iDataIdx, 4);
@@ -56,6 +57,22 @@ static void get_timestamp(struct ssp_data *data, char *pchRcvDataFrame,
 	if (sensortime->batch_mode == BATCH_MODE_RUN) {
 		// BATCHING MODE
 		data->lastTimestamp[iSensorData] += deltaTimeNs;
+
+		/* Need to check timestemp logging */
+		if (deltaTimeNs > data->adDelayBuf[iSensorData])
+			req_delta = deltaTimeNs - data->adDelayBuf[iSensorData];
+		else
+			req_delta = data->adDelayBuf[iSensorData] - deltaTimeNs;
+
+		/* Remain logs when delta diff over 5% */
+		if (req_delta > div64_u64(data->adDelayBuf[iSensorData], 20)) {
+			pr_warn("[SSP] type:%d, reciv time(us):%u, ck_diff:%llu[%u/%u]\n",
+				iSensorData, deltaTimeUs, req_delta,
+				total_cnt, sensortime->batch_count);
+			pr_warn("[SSP] ref_time(ns):%llu, conv_time(ns):%llu, laststamp:%llu\n",
+				data->adDelayBuf[iSensorData], deltaTimeNs,
+				data->lastTimestamp[iSensorData]);
+		}
 	} else {
 		// NORMAL MODE
 
@@ -109,6 +126,8 @@ static void get_timestamp(struct ssp_data *data, char *pchRcvDataFrame,
 			if (deltaTimeNs == 0ULL || deltaTimeNs == 1000ULL || deltaTimeNs == 80000ULL) {
 				data->lastTimestamp[iSensorData] = data->timestamp - 15000000ULL;
 				deltaTimeNs = 0ULL;
+				pr_warn("[SSP] We've got magic number for type:%d, rev_t:%u(us), laststamp:%llu\n",
+					iSensorData, deltaTimeUs, data->lastTimestamp[iSensorData]);
 			}
 
 			if (data->report_mode[iSensorData] == REPORT_MODE_ON_CHANGE) {
@@ -118,6 +137,7 @@ static void get_timestamp(struct ssp_data *data, char *pchRcvDataFrame,
 			}
 		}
 	}
+
 	sensorsdata->timestamp = data->lastTimestamp[iSensorData];
 	*iDataIdx += 4;
 }
@@ -360,11 +380,13 @@ int parse_dataframe(struct ssp_data *data,
 	char *pchRcvDataFrame, int iLength)
 {
 	int iDataIdx, iSensorData;
-	u16 length = 0;
+	u16 length = 0, total_cnt = 0;
 	struct sensor_value sensorsdata;
 	struct ssp_time_diff sensortime;
 	s16 caldata[3] = { 0, };
 	int iRet = FAIL;
+	int curr_idx;
+
 
 	sensortime.time_diff = 0;
 	data->uIrqCnt++;
@@ -384,10 +406,18 @@ int parse_dataframe(struct ssp_data *data,
 			sensortime.batch_count = sensortime.batch_count_fixed = length;
 			sensortime.batch_mode = length > 1 ? BATCH_MODE_RUN : BATCH_MODE_NONE;
 
+			/* For batch_mode debugging */
+			if (sensortime.batch_mode) {
+				pr_info("[SSP]: current batch cnt:%d, type:%d, udelay:%lld, latency:%d\n",
+					sensortime.batch_count, iSensorData, data->adDelayBuf[iSensorData],
+					data->batchLatencyBuf[iSensorData]);
+				total_cnt = sensortime.batch_count;
+			}
+
 			do {
 				data->get_sensor_data[iSensorData](pchRcvDataFrame, &iDataIdx, &sensorsdata);
 				data->skipEventReport = false;
-				get_timestamp(data, pchRcvDataFrame, &iDataIdx, &sensorsdata, &sensortime, iSensorData);
+				get_timestamp(data, pchRcvDataFrame, &iDataIdx, &sensorsdata, &sensortime, iSensorData, total_cnt);
 				if (data->skipEventReport == false) {
 					data->report_sensor_data[iSensorData](data, &sensorsdata);
 				}
@@ -463,6 +493,12 @@ int parse_dataframe(struct ssp_data *data,
 			save_gyro_caldata(data, caldata);
 			wake_unlock(&data->ssp_wake_lock);
 			iDataIdx += sizeof(caldata);
+			break;
+
+		default:
+			curr_idx = (iDataIdx - 1);
+			pr_warn("[SSP]%s Unsupported instruction 0x%x (%dth)!!!\n",
+				__func__, pchRcvDataFrame[curr_idx], curr_idx);
 			break;
 		}
 	}

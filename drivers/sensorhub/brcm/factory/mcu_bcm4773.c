@@ -78,6 +78,14 @@ ssize_t mcu_reset_show(struct device *dev,
 	return sprintf(buf, "OK\n");
 }
 
+ssize_t mcu_ready_show(struct device *dev,
+	struct device_attribute *attr, char *buf)
+{
+	struct ssp_data *data = dev_get_drvdata(dev);
+
+	return sprintf(buf, "%d\n", data->bSspReady);
+}
+
 ssize_t mcu_dump_show(struct device *dev,
 	struct device_attribute *attr, char *buf)
 {

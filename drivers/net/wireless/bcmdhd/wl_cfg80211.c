@@ -1,7 +1,7 @@
 /*
  * Linux cfg80211 driver
  *
- * Copyright (C) 1999-2016, Broadcom Corporation
+ * Copyright (C) 1999-2017, Broadcom Corporation
  * 
  *      Unless you and Broadcom execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
@@ -64,10 +64,6 @@
 #include <wl_cfg80211.h>
 #include <wl_cfgp2p.h>
 #include <wl_android.h>
-
-#ifdef CONFIG_SLEEP_MONITOR
-#include <linux/power/sleep_monitor.h>
-#endif
 
 #ifdef PROP_TXSTATUS
 #include <dhd_wlfc.h>
@@ -11367,68 +11363,6 @@ static s32 wl_init_roam_timeout(struct bcm_cfg80211 *cfg)
 }
 #endif /* DHD_LOSSLESS_ROAMING */
 
-#ifdef CONFIG_SLEEP_MONITOR
-extern char g_if_flag;
-
-int wl_get_sleep_monitor_cb(void *priv, unsigned int *raw_val,
-		int check_level, int caller_type)
-{
-	struct bcm_cfg80211 *cfg = priv;
-	int state = DEVICE_UNKNOWN, type = check_level;
-	dhd_pub_t *dhd = (dhd_pub_t *)(cfg->pub);
-	struct net_device *ndev = bcmcfg_to_prmry_ndev(cfg);
-	char iovbuf[20];
-	unsigned int temp_raw = 0;
-
-	if (!g_if_flag) {
-		*raw_val = temp_raw;
-		state = DEVICE_POWER_OFF;
-	} else {
-		state = DEVICE_ON_ACTIVE1;
-
-		if (type == SLEEP_MONITOR_CHECK_HARD) {
-			memset(iovbuf, 0, sizeof(iovbuf));
-			bcm_mkiovar("ps_allowed", 0, 0, iovbuf, sizeof(iovbuf));
-			dhd_wl_ioctl_cmd(dhd, WLC_GET_VAR, iovbuf,
-					sizeof(iovbuf), FALSE, 0);
-			temp_raw |= *((uint32 *)iovbuf) & 0xf;
-		}
-
-		if (dhd->op_mode == DHD_FLAG_CONCURR_SINGLE_CHAN_MODE ||
-				dhd->op_mode == DHD_FLAG_CONCURR_MULTI_CHAN_MODE)
-			temp_raw |= 0x1 << 12;
-		else if (dhd->op_mode & DHD_FLAG_P2P_GC_MODE)
-			temp_raw |= 0x2 << 12;
-		else if (dhd->op_mode & DHD_FLAG_P2P_GO_MODE)
-			temp_raw |= 0x3 << 12;
-		else if (dhd->op_mode == DHD_FLAG_HOSTAP_MODE)
-			temp_raw |= 0x4 << 12;
-		else if (dhd->op_mode == DHD_FLAG_MFG_MODE)
-			temp_raw |= 0x5 << 12;
-		else
-			temp_raw |= 0x6 << 12;
-
-		if (wl_get_drv_status(cfg, CONNECTED, ndev))
-			temp_raw |= 1 << 8;
-
-		if (wl_get_drv_status_all(cfg, SCANNING)) {
-			temp_raw |= 1 << 4;
-			state = DEVICE_ON_ACTIVE2;
-		}
-
-		*raw_val = temp_raw;
-	}
-
-	WL_INFO(("check_level[%d] g_if_flag[%d] op_mode[0x%04x]\n", check_level, g_if_flag, dhd->op_mode));
-
-	return state;
-}
-
-static struct sleep_monitor_ops wl_sleep_monitor_ops = {
-	.read_cb_func = wl_get_sleep_monitor_cb,
-};
-#endif
-
 static s32 wl_init_priv(struct bcm_cfg80211 *cfg)
 {
 	struct wiphy *wiphy = bcmcfg_to_wiphy(cfg);
@@ -11474,12 +11408,6 @@ static s32 wl_init_priv(struct bcm_cfg80211 *cfg)
 	wl_link_down(cfg);
 	DNGL_FUNC(dhd_cfg80211_init, (cfg));
 
-#ifdef CONFIG_SLEEP_MONITOR
-	sleep_monitor_register_ops(cfg, &wl_sleep_monitor_ops,
-		SLEEP_MONITOR_WIFI);
-#endif
-	INIT_DELAYED_WORK(&cfg->pm_enable_work, wl_cfg80211_work_handler);
-
 	return err;
 }
 
@@ -11498,9 +11426,6 @@ static void wl_deinit_priv(struct bcm_cfg80211 *cfg)
 		wl_cfg80211_netdev_notifier_registered = FALSE;
 		unregister_netdevice_notifier(&wl_cfg80211_netdev_notifier);
 	}
-#ifdef CONFIG_SLEEP_MONITOR
-	    sleep_monitor_unregister_ops(SLEEP_MONITOR_WIFI);
-#endif
 }
 
 #if defined(WL_ENABLE_P2P_IF) || defined(WL_NEWCFG_PRIVCMD_SUPPORT)
@@ -12426,6 +12351,7 @@ static s32 __wl_cfg80211_up(struct bcm_cfg80211 *cfg)
 	/* Reset WES mode to 0 */
 	wes_mode = 0;
 #endif
+	INIT_DELAYED_WORK(&cfg->pm_enable_work, wl_cfg80211_work_handler);
 	wl_set_drv_status(cfg, READY, ndev);
 	return err;
 }

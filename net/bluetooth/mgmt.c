@@ -5700,6 +5700,44 @@ unlock:
 	return err;
 }
 
+#ifdef CONFIG_TIZEN_WIP
+static int set_streaming_mode(struct sock *sk, struct hci_dev *hdev,
+			      void *cp_data, u16 len)
+{
+	struct mgmt_cp_set_streaming_mode *cp = cp_data;
+	struct hci_conn *conn;
+	int err;
+	int status = MGMT_STATUS_SUCCESS;
+
+	BT_DBG("request for %s", hdev->name);
+
+	hci_dev_lock(hdev);
+
+	conn = hci_conn_hash_lookup_ba(hdev, ACL_LINK, &cp->bdaddr);
+	if (!conn) {
+		err = -ENOTCONN;
+		goto unlock;
+	}
+
+	err = hci_conn_streaming_mode(conn, cp->streaming_mode);
+
+unlock:
+	if (err == -ENOTCONN)
+		status = MGMT_STATUS_NOT_CONNECTED;
+	else if (err == -EOPNOTSUPP)
+		status = MGMT_STATUS_NOT_SUPPORTED;
+	else if (err == -ENOENT)
+		status = MGMT_STATUS_INVALID_PARAMS;
+
+	err = cmd_complete(sk, hdev->id, MGMT_OP_SET_STREAMING_MODE,
+			   status, NULL, 0);
+
+	hci_dev_unlock(hdev);
+
+	return err;
+}
+#endif
+
 static bool irk_is_valid(struct mgmt_irk_info *irk)
 {
 	switch (irk->addr.type) {
@@ -7894,8 +7932,8 @@ static const struct mgmt_handler {
 static const struct mgmt_handler tizen_mgmt_handlers[] = {
 	{ NULL }, /* 0x0000 (no command) */
 	{ set_advertising_params,  false, MGMT_SET_ADVERTISING_PARAMS_SIZE },
-	{ set_advertising_data,    true, MGMT_SET_ADV_MIN_APP_DATA_SIZE },
-	{ set_scan_rsp_data,       true, MGMT_SET_SCAN_RSP_MIN_APP_DATA_SIZE },
+	{ set_advertising_data,    true,  MGMT_SET_ADV_MIN_APP_DATA_SIZE },
+	{ set_scan_rsp_data,       true,  MGMT_SET_SCAN_RSP_MIN_APP_DATA_SIZE },
 	{ add_white_list,          false, MGMT_ADD_DEV_WHITE_LIST_SIZE },
 	{ remove_from_white_list,  false, MGMT_REMOVE_DEV_FROM_WHITE_LIST_SIZE },
 	{ clear_white_list,        false, MGMT_OP_CLEAR_DEV_WHITE_LIST_SIZE },
@@ -7906,10 +7944,11 @@ static const struct mgmt_handler tizen_mgmt_handlers[] = {
 	{ stop_le_discovery,       false, MGMT_STOP_LE_DISCOVERY_SIZE },
 	{ disable_le_auto_connect, false, MGMT_DISABLE_LE_AUTO_CONNECT_SIZE },
 	{ le_conn_update,          false, MGMT_LE_CONN_UPDATE_SIZE},
-	{ set_manufacturer_data,   false, MGMT_SET_MANUFACTURER_DATA_SIZE},
+	{ set_manufacturer_data,   true,  MGMT_SET_MANUFACTURER_DATA_SIZE},
 	{ le_set_scan_params,      false, MGMT_LE_SET_SCAN_PARAMS_SIZE },
-	{ set_voice_setting,       false, MGMT_SET_VOICE_SETTING_SIZE},
-	{ get_adv_tx_power,       false, MGMT_GET_ADV_TX_POWER_SIZE}
+	{ set_voice_setting,       false, MGMT_SET_VOICE_SETTING_SIZE },
+	{ get_adv_tx_power,        false, MGMT_GET_ADV_TX_POWER_SIZE },
+	{ set_streaming_mode,      false, MGMT_SET_STREAMING_MODE_SIZE },
 };
 #endif
 
@@ -8017,6 +8056,9 @@ handle_mgmt:
 #endif
 	if ((handler->var_len && len < handler->data_len) ||
 	    (!handler->var_len && len != handler->data_len)) {
+		BT_ERR("tizen_mgmt is not matched");
+		BT_ERR("len(%d) var_len(%d) data_len(%d)\n", len,
+				handler->var_len , handler->data_len);
 		err = cmd_status(sk, index, opcode,
 				 MGMT_STATUS_INVALID_PARAMS);
 		goto done;

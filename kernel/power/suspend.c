@@ -33,7 +33,6 @@
 #include <linux/time.h>
 #include <linux/power/sleep_history.h>
 #endif
-
 #ifdef CONFIG_SLEEP_MONITOR
 #include <linux/power/sleep_monitor.h>
 #endif
@@ -159,12 +158,6 @@ static int suspend_enter(suspend_state_t state, bool *wakeup)
 		if (error)
 			goto Platform_finish;
 	}
-#ifdef CONFIG_PM_SLEEP_HISTORY
-{
-		struct timespec ts = current_kernel_time();
-		sleep_history_marker(SLEEP_HISTORY_SUSPEND_ENTRY, &ts, NULL);
-}
-#endif
 
 #ifdef CONFIG_SLEEP_MONITOR
 {
@@ -246,7 +239,6 @@ int suspend_devices_and_enter(suspend_state_t state)
 	suspend_console();
 	ftrace_stop();
 	suspend_test_start();
-
 	error = dpm_suspend_start(PMSG_SUSPEND);
 	if (error) {
 #if defined (CONFIG_PM_SLEEP_HISTORY) || defined (CONFIG_SLEEP_MONITOR)
@@ -273,7 +265,7 @@ int suspend_devices_and_enter(suspend_state_t state)
 #ifdef CONFIG_PM_SLEEP_HISTORY
 {
 		struct timespec ts = current_kernel_time();
-		sleep_history_marker(SLEEP_HISTORY_SUSPEND_EXIT, &ts, NULL);
+		sleep_history_marker(SLEEP_HISTORY_SUSPEND_EXIT, &ts, NULL, 0, NULL);
 }
 #endif
 #ifdef CONFIG_SLEEP_MONITOR

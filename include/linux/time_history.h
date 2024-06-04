@@ -175,4 +175,10 @@ static inline void time_history_marker_system_rtc(const struct timespec *system,
 }
 #endif /* CONFIG_TIME_HISTORY */
 
+#ifdef CONFIG_SUPPORT_ALARM_TIMEZONE_DST
+extern int alarm_get_tz(void);
+#else
+static inline int alarm_get_tz(void){return 0;}
+#endif
+
 #endif /* _LINUX_TIME_HISTORY_H */

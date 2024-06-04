@@ -14,6 +14,8 @@
  */
 #include "ssp.h"
 #include <linux/math64.h>
+#include <linux/ioctl.h>
+#include <linux/compat.h>
 
 #define BATCH_IOCTL_MAGIC		0xFC
 
@@ -701,6 +703,29 @@ static ssize_t set_grip_delay(struct device *dev,
 	return size;
 }
 
+static ssize_t set_flush(struct device *dev,
+	struct device_attribute *attr, const char *buf, size_t size)
+{
+	int64_t dTemp;
+	u8 sensor_type = 0;
+	struct ssp_data *data = dev_get_drvdata(dev);
+
+	if (kstrtoll(buf, 10, &dTemp) < 0)
+		return -EINVAL;
+
+	sensor_type = (u8)dTemp;
+	if (!(atomic64_read(&data->aSensorEnable) & (1 << sensor_type)))
+		return -EINVAL;
+
+	pr_info("[SSP] ssp try to manual flush(type:%x)\n", sensor_type);
+	if (flush(data, sensor_type) < 0) {
+		pr_err("[SSP] ssp returns error for flush(%x)\n", sensor_type);
+		return -EINVAL;
+	}
+
+	return size;
+}
+
 static DEVICE_ATTR(mcu_rev, S_IRUGO, mcu_revision_show, NULL);
 static DEVICE_ATTR(mcu_name, S_IRUGO, mcu_model_name_show, NULL);
 static DEVICE_ATTR(mcu_update, S_IRUGO, mcu_update_kernel_bin_show, NULL);
@@ -708,6 +733,7 @@ static DEVICE_ATTR(mcu_update2, S_IRUGO,
 	mcu_update_kernel_crashed_bin_show, NULL);
 static DEVICE_ATTR(mcu_update_ums, S_IRUGO, mcu_update_ums_bin_show, NULL);
 static DEVICE_ATTR(mcu_reset, S_IRUGO, mcu_reset_show, NULL);
+static DEVICE_ATTR(mcu_ready, S_IRUGO, mcu_ready_show, NULL);
 static DEVICE_ATTR(mcu_dump, S_IRUGO, mcu_dump_show, NULL);
 static DEVICE_ATTR(mcu_sensorstate, S_IRUGO, mcu_sensor_state, NULL);
 static DEVICE_ATTR(mcu_test, S_IRUGO | S_IWUSR | S_IWGRP,
@@ -783,12 +809,16 @@ static DEVICE_ATTR(grip_poll_delay, S_IRUGO | S_IWUSR | S_IWGRP,
 static DEVICE_ATTR(set_cal_data, S_IWUSR | S_IWGRP,
 	NULL, set_cal_data);
 
+static DEVICE_ATTR(ssp_flush, S_IWUSR | S_IWGRP,
+	NULL, set_flush);
+
 static struct device_attribute *mcu_attrs[] = {
 	&dev_attr_enable,
 	&dev_attr_mcu_rev,
 	&dev_attr_mcu_name,
 	&dev_attr_mcu_test,
 	&dev_attr_mcu_reset,
+	&dev_attr_mcu_ready,
 	&dev_attr_mcu_sensorstate,
 	&dev_attr_mcu_dump,
 	&dev_attr_mcu_update,
@@ -840,6 +870,7 @@ static struct device_attribute *mcu_attrs[] = {
 	&dev_attr_grip_poll_delay,
 #endif
 	&dev_attr_set_cal_data,
+	&dev_attr_ssp_flush,
 	NULL,
 };
 
@@ -1091,22 +1122,154 @@ err_create_poll_delay:
 	return ERROR;
 }
 
+static long ssp_batch_ioctl(struct file *file, unsigned int cmd,
+				unsigned long arg)
+{
+	struct ssp_data *data
+		= container_of(file->private_data,
+			struct ssp_data, batch_io_device);
+
+	struct batch_config batch;
+
+	void __user *argp = (void __user *)arg;
+	int retries = 2;
+	int ret = 0;
+	int sensor_type, ms_delay;
+	int timeout_ms = 0;
+	u8 uBuf[9];
+
+	sensor_type = (cmd & 0xFF);
+
+	if ((cmd >> 8 & 0xFF) != BATCH_IOCTL_MAGIC) {
+		pr_err("[SSP] Invalid BATCH CMD %x\n", cmd);
+		return -EINVAL;
+	}
+
+	while (retries--) {
+		ret = copy_from_user(&batch, argp, sizeof(batch));
+		if (likely(!ret))
+			break;
+	}
+	if (unlikely(ret)) {
+		pr_err("[SSP] batch ioctl err(%d)\n", ret);
+		return -EINVAL;
+	}
+
+	pr_info("[SSP] batch ioctl [arg] delay:%lld, timeout:%lld, flag:0x%0x\n",
+		batch.delay, batch.timeout, batch.flag);
+
+	ms_delay = get_msdelay(batch.delay);
+	timeout_ms = div_s64(batch.timeout, 1000000);
+	memcpy(&uBuf[0], &ms_delay, 4);
+	memcpy(&uBuf[4], &timeout_ms, 4);
+	uBuf[8] = batch.flag;
+
+	/* For arg input checking */
+	if ((batch.timeout < 0) || (batch.delay <= 0)) {
+		pr_err("[SSP] Invalid batch values!!\n");
+		return -EINVAL;
+	} else if ((batch.timeout != 0) && (timeout_ms == 0)) {
+		pr_err("[SSP] Invalid batch timeout range!!\n");
+		return -EINVAL;
+	} else if ((batch.delay != 0) && (ms_delay == 0)) {
+		pr_err("[SSP] Invalid batch delay range!!\n");
+		return -EINVAL;
+	}
+
+	if (batch.timeout) { /* add or dry */
+
+		if(!(batch.flag & SENSORS_BATCH_DRY_RUN)) { /* real batch, NOT DRY, change delay */
+			ret = 1;
+			/* if sensor is not running state, enable will be called.
+			   MCU return fail when receive chage delay inst during NO_SENSOR STATE */
+			if (data->aiCheckStatus[sensor_type] == RUNNING_SENSOR_STATE) {
+				ret = send_instruction_sync(data, CHANGE_DELAY, sensor_type, uBuf, 9);
+			}
+			if (ret > 0) { // ret 1 is success
+				data->batchOptBuf[sensor_type] = (u8)batch.flag;
+				data->batchLatencyBuf[sensor_type] = timeout_ms;
+				data->adDelayBuf[sensor_type] = batch.delay;
+			}
+		} else { /* real batch, DRY RUN */
+			ret = send_instruction_sync(data, CHANGE_DELAY, sensor_type, uBuf, 9);
+			if (ret > 0) { // ret 1 is success
+				data->batchOptBuf[sensor_type] = (u8)batch.flag;
+				data->batchLatencyBuf[sensor_type] = timeout_ms;
+				data->adDelayBuf[sensor_type] = batch.delay;
+			}
+		}
+	} else { /* remove batch or normal change delay, remove or add will be called. */
+
+		if (!(batch.flag & SENSORS_BATCH_DRY_RUN)) { /* no batch, NOT DRY, change delay */
+			data->batchOptBuf[sensor_type] = 0;
+			data->batchLatencyBuf[sensor_type] = 0;
+			data->adDelayBuf[sensor_type] = batch.delay;
+			if (data->aiCheckStatus[sensor_type] == RUNNING_SENSOR_STATE) {
+				send_instruction(data, CHANGE_DELAY, sensor_type, uBuf, 9);
+			}
+		}
+	}
+
+	pr_info("[SSP] batch %d: delay %lld(ms_delay:%d), timeout %lld(timeout_ms:%d), flag %d, ret %d \n",
+		sensor_type, batch.delay, ms_delay, batch.timeout, timeout_ms, batch.flag, ret);
+	if (!batch.timeout)
+		return 0;
+	if (ret <= 0)
+		return -EINVAL;
+	else
+		return 0;
+}
+
+#ifdef CONFIG_COMPAT
+static long ssp_batch_compat_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+{
+	return ssp_batch_ioctl(file, cmd, (unsigned long)compat_ptr(arg));
+}
+#endif
+
+static struct file_operations ssp_batch_fops = {
+	.owner = THIS_MODULE,
+	.open = nonseekable_open,
+	.unlocked_ioctl = ssp_batch_ioctl,
+#ifdef CONFIG_COMPAT
+	.compat_ioctl = ssp_batch_compat_ioctl,
+#endif
+};
+
 int initialize_sysfs(struct ssp_data *data)
 {
 	initialize_factorytest(data);
 
 	initialize_mcu_factorytest(data);
-	initialize_input_poll_delay_sysfs(data);
+	if (initialize_input_poll_delay_sysfs(data) != SUCCESS)
+		goto err_init_input_sysfs;
+
+	data->batch_io_device.minor = MISC_DYNAMIC_MINOR;
+	data->batch_io_device.name = "batch_io";
+	data->batch_io_device.fops = &ssp_batch_fops;
+	if (misc_register(&data->batch_io_device))
+		goto err_batch_io_dev;
 
 	return SUCCESS;
+
+err_batch_io_dev:
+	remove_input_poll_delay_sysfs(data);
+err_init_input_sysfs:
+	remove_mcu_factorytest(data);
+	remove_factorytest(data);
+
+	return ERROR;
 }
 
 void remove_sysfs(struct ssp_data *data)
 {
+	misc_deregister(&data->batch_io_device);
+
+	remove_input_poll_delay_sysfs(data);
+
 	remove_factorytest(data);
 
 	remove_mcu_factorytest(data);
-	remove_input_poll_delay_sysfs(data);
 
 	destroy_sensor_class();
 }

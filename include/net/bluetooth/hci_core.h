@@ -35,6 +35,11 @@
 /* HCI priority */
 #define HCI_PRIO_MAX	7
 
+#ifdef CONFIG_TIZEN_WIP
+/* Reserved ACL slots for Streaming packets */
+#define STREAMING_RESERVED_SLOTS	2
+#endif
+
 /* HCI Core structures */
 struct inquiry_data {
 	bdaddr_t	bdaddr;
@@ -174,6 +179,10 @@ struct amp_assoc {
 
 #define HCI_MAX_PAGES	3
 
+#ifdef CONFIG_TIZEN_WIP
+#define HCI_MAX_EIR_MANUFACTURER_DATA_LENGTH	100
+#endif
+
 #define NUM_REASSEMBLY 4
 struct hci_dev {
 	struct list_head list;
@@ -275,6 +284,9 @@ struct hci_dev {
 	unsigned int	acl_cnt;
 	unsigned int	sco_cnt;
 	unsigned int	le_cnt;
+#ifdef CONFIG_TIZEN_WIP
+	unsigned int	streaming_cnt;
+#endif
 
 	unsigned int	acl_mtu;
 	unsigned int	sco_mtu;
@@ -332,6 +344,9 @@ struct hci_dev {
 /* END TIZEN_Bluetooth */
 #endif
 	struct hci_conn_hash	conn_hash;
+#ifdef CONFIG_TIZEN_WIP
+	struct hci_conn		*streaming_conn;
+#endif
 
 	struct list_head	mgmt_pending;
 	struct list_head	blacklist;
@@ -376,7 +391,7 @@ struct hci_dev {
 	__u8			adv_type;
 
 	__u8			manufacturer_len;
-	__u8			manufacturer_data[HCI_MAX_AD_LENGTH - 3];
+	__u8			manufacturer_data[HCI_MAX_EIR_MANUFACTURER_DATA_LENGTH - 3];
 
 	struct wake_lock hci_rx_wake_lock;
 	char hci_rx_wake_lock_name[15];
@@ -454,6 +469,9 @@ struct hci_conn {
 	__u8		remote_id;
 
 	unsigned int	sent;
+#ifdef CONFIG_TIZEN_WIP
+	unsigned int	streaming_sent;
+#endif
 
 	struct sk_buff_head data_q;
 	struct list_head chan_list;
@@ -1585,6 +1603,7 @@ int mgmt_le_conn_updated(struct hci_dev *hdev, bdaddr_t *bdaddr, u8 type,
 		u16 supervision_timeout);
 int mgmt_le_conn_update_failed(struct hci_dev *hdev, bdaddr_t *bdaddr,
 		u8 link_type, u8 addr_type, u8 status);
+int hci_conn_streaming_mode(struct hci_conn *conn, bool streaming_mode);
 #endif
 
 u8 hci_le_conn_update(struct hci_conn *conn, u16 min, u16 max, u16 latency,

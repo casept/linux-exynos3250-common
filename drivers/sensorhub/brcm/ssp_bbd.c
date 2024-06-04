@@ -274,6 +274,8 @@ retries:
 		ssp_send_cmd(data, data->uLastAPState, 0);
 	if (data->uLastResumeState != 0)
 		ssp_send_cmd(data, data->uLastResumeState, 0);
+
+	data->bSspReady = true;
 }
 
 /**

@@ -39,12 +39,9 @@
 #include <linux/percpu.h>
 #include <linux/slab.h>
 #include <linux/syscore_ops.h>
-#ifdef CONFIG_PM_SLEEP_HISTORY
-#include <linux/power/sleep_history.h>
-#endif
 
-#ifdef CONFIG_SLEEP_MONITOR
-#include <linux/power/slp_mon_irq_dev.h>
+#ifdef CONFIG_IRQ_HISTORY
+#include <linux/power/irq_history.h>
 #endif
 
 #include <asm/irq.h>
@@ -214,9 +211,6 @@ static void gic_show_resume_irq(struct gic_chip_data *gic)
 	u32 enabled;
 	unsigned long pending[32];
 	void __iomem *base = gic_data_dist_base(gic);
-#ifdef CONFIG_PM_SLEEP_HISTORY
-	int irq = NR_IRQS;
-#endif
 
 	pr_debug("%s: \n", __func__);
 
@@ -236,17 +230,8 @@ static void gic_show_resume_irq(struct gic_chip_data *gic)
 	     i < gic->max_irq;
 	     i = find_next_bit(pending, gic->max_irq, i+1)) {
 		pr_warning("%s: %d triggered\n", __func__, i);
-#ifdef CONFIG_PM_SLEEP_HISTORY
-		irq = i;
-		sleep_history_marker(SLEEP_HISTORY_WAKEUP_IRQ, NULL, (void *)&irq);
-#endif
-
-#ifdef CONFIG_SLEEP_MONITOR
-{
-		struct irq_desc *desc = irq_to_desc(irq);
-		if (desc && desc->action && desc->action->name)
-			add_slp_mon_irq_list(irq, (char*)desc->action->name);
-}
+#ifdef CONFIG_IRQ_HISTORY
+		add_irq_history(i, NULL);
 #endif
 
 	}

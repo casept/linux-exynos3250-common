@@ -114,10 +114,13 @@ static int save_hrm_eol_data(struct ssp_data *data)
 
 int pps960_set_hrm_calibration(struct ssp_data *data)
 {
-	int iRet = 0;
+	int i, iRet = 0;
 	struct ssp_msg *msg;
 
 	if (!(data->uSensorState & (1 << HRM_RAW_SENSOR))) {
+		for (i = 0; i < 16; i++)
+			data->buf[HRM_RAW_FAC_SENSOR].hrm_eol_data[i] = 0;
+
 		pr_info("[SSP]: %s - Skip this function!!!"\
 			", hrm sensor is not connected(0x%llx)\n",
 			__func__, data->uSensorState);

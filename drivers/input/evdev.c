@@ -88,6 +88,9 @@ static void evdev_pass_event(struct evdev_client *client,
 		client->packet_head = client->tail;
 		if (client->use_wake_lock)
 			wake_unlock(&client->wake_lock);
+
+		pr_warn("forcely!! evdev EV_SYN/SYN_DROPPED happend for %s/%s!!\n",
+			client->name, client->evdev->handle.dev->name);
 	}
 
 	if (event->type == EV_SYN && event->code == SYN_REPORT) {
@@ -268,6 +271,9 @@ static int evdev_release(struct inode *inode, struct file *file)
 	struct evdev_client *client = file->private_data;
 	struct evdev *evdev = client->evdev;
 
+	pr_info("evdev close for %s/%s\n",
+		client->name, evdev->handle.dev->name);
+
 	mutex_lock(&evdev->mutex);
 	if (evdev->grab == client)
 		evdev_ungrab(evdev, client);
@@ -344,6 +350,9 @@ static int evdev_open(struct inode *inode, struct file *file)
 
 	file->private_data = client;
 	nonseekable_open(inode, file);
+
+	pr_info("evdev open buff cnt: %d, for %s/%s\n",
+		bufsize, client->name, evdev->handle.dev->name);
 
 	return 0;
 
@@ -680,6 +689,7 @@ static int evdev_handle_mt_request(struct input_dev *dev,
 static int evdev_enable_suspend_block(struct evdev *evdev,
 				      struct evdev_client *client)
 {
+	pr_info("%s: client->use_wake_lock = %s\n", __func__, client->use_wake_lock?"TRUE":"FALSE");
 	if (client->use_wake_lock)
 		return 0;
 
@@ -695,6 +705,7 @@ static int evdev_enable_suspend_block(struct evdev *evdev,
 static int evdev_disable_suspend_block(struct evdev *evdev,
 				       struct evdev_client *client)
 {
+	pr_info("%s: client->use_wake_lock = %s\n", __func__, client->use_wake_lock?"TRUE":"FALSE");
 	if (!client->use_wake_lock)
 		return 0;
 

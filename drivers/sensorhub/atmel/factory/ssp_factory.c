@@ -144,7 +144,7 @@ void initialize_factorytest(struct ssp_data *data)
 {
 
 #if defined(CONFIG_MACH_WC1) || defined(CONFIG_MACH_SMARTKEY)\
-	 || defined(CONFIG_MACH_VOLT)
+	 || defined(CONFIG_MACH_VOLT) || defined(CONFIG_MACH_VOLT_NE)
 #ifdef CONFIG_SENSORS_SSP_ACCELEROMETER_SENSOR
 	if (data->ap_rev < 8)
 		initialize_bmi168_accel_factorytest(data);
@@ -211,7 +211,7 @@ void initialize_factorytest(struct ssp_data *data)
 void remove_factorytest(struct ssp_data *data)
 {
 #if defined(CONFIG_MACH_WC1) || defined(CONFIG_MACH_SMARTKEY)\
-	|| defined(CONFIG_MACH_VOLT)
+	|| defined(CONFIG_MACH_VOLT) || defined(CONFIG_MACH_VOLT_NE)
 #ifdef CONFIG_SENSORS_SSP_ACCELEROMETER_SENSOR
 	if (data->ap_rev < 8)
 		remove_bmi168_accel_factorytest(data);

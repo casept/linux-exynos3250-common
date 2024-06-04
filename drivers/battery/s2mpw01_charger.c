@@ -29,7 +29,7 @@
 extern struct sec_switch_data switch_data;
 #endif
 
-extern unsigned int system_rev;
+extern unsigned int batt_booting_chk;
 
 #define ENABLE_MIVR 1
 
@@ -120,6 +120,7 @@ static enum power_supply_property sec_charger_props[] = {
 	POWER_SUPPLY_PROP_CURRENT_NOW,
 	POWER_SUPPLY_PROP_USB_OTG,
 	POWER_SUPPLY_PROP_CHARGE_ENABLED,
+	POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN,
 };
 
 static int s2mpw01_get_charging_health(struct s2mpw01_charger_data *charger);
@@ -182,9 +183,11 @@ static void s2mpw01_topoff_interrupt_onoff(struct s2mpw01_charger_data *charger,
 		sec_chg_update(charger->iodev, S2MPW01_CHG_REG_INT1M, 0x00, 0x04);
 		charger->iodev->irq_masks_cur[3] &= ~0x04;
 		pr_err("[DEBUG]%s: Use top-off interrupt: 0x%x\n", __func__, charger->iodev->irq_masks_cur[3]);
+		pm_stay_awake(charger->dev);
 		s2mpw01_enable_charger_switch(charger, false);
 		msleep(100);
 		s2mpw01_enable_charger_switch(charger, true);
+		pm_relax(charger->dev);
 	} else {
 		/* Not use top-off interrupt. Masking */
 		sec_chg_update(charger->iodev, S2MPW01_CHG_REG_INT1M, 0x04, 0x04);
@@ -241,11 +244,15 @@ static int s2mpw01_get_fast_charging_current(struct sec_pmic_dev *iodev)
 	if (ret < 0)
 		return ret;
 
-	data = data & FAST_CHARGING_CURRENT_MASK;
+	data = (data & FAST_CHARGING_CURRENT_MASK) >> FAST_CHARGING_CURRENT_SHIFT;
 
-	if (data > 0x5)
-		data = 0x5;
-	return data * 50 + 150;
+	if (data <= 0x5)
+		data = data * 50 + 150;
+	else if (data == 0x06)
+		data = 75;
+	else if (data == 0x07)
+		data = 175;
+	return data;
 }
 
 int eoc_current[16] =
@@ -334,8 +341,6 @@ static void s2mpw01_configure_charger(struct s2mpw01_charger_data *charger)
 	struct device *dev = charger->dev;
 	int eoc = 0;
 	union power_supply_propval chg_mode;
-	union power_supply_propval swelling_state;
-
 
 	dev_err(dev, "%s() set configure charger \n", __func__);
 
@@ -364,39 +369,53 @@ static void s2mpw01_configure_charger(struct s2mpw01_charger_data *charger)
 
 	s2mpw01_set_charging_current(charger);
 
-	if (charger->pdata->full_check_type_2nd == SEC_BATTERY_FULLCHARGED_CHGPSY) {
-			psy_do_property("battery", get,
-					POWER_SUPPLY_PROP_CHARGE_NOW,
-					chg_mode);
+	dev_err(dev, "%s: full_check_type [%d][%d]\n", __func__,
+			charger->pdata->full_check_type, charger->pdata->full_check_type_2nd);
 
-/* remove swelling code in charger driver */
-#if 0  /* defined(CONFIG_BATTERY_SWELLING) */
-			psy_do_property("battery", get,
-					POWER_SUPPLY_PROP_CHARGE_CONTROL_LIMIT,
-					swelling_state);
-#else
-			swelling_state.intval = 0;
-#endif
-			if (chg_mode.intval == SEC_BATTERY_CHARGING_2ND || swelling_state.intval) {
-//				s2mpw01_enable_charger_switch(charger, 0);
-				charger->full_charged = false;
-				eoc = charger->pdata->charging_current_table
-					[charger->cable_type].full_check_current_2nd;
+	if (charger->pdata->full_check_type == SEC_BATTERY_FULLCHARGED_CHGPSY) {
+		if (charger->pdata->full_check_type_2nd == SEC_BATTERY_FULLCHARGED_CHGPSY) {
+				psy_do_property("battery", get,
+						POWER_SUPPLY_PROP_CHARGE_NOW,
+						chg_mode);
+
+				if (chg_mode.intval == SEC_BATTERY_CHARGING_2ND) {
+					//s2mpw01_enable_charger_switch(charger, 0);
+					charger->full_charged = false;
+					eoc = charger->pdata->charging_current_table
+						[charger->cable_type].full_check_current_2nd;
+				} else {
+					eoc = charger->pdata->charging_current_table
+						[charger->cable_type].full_check_current_1st;
+				}
 			} else {
 				eoc = charger->pdata->charging_current_table
 					[charger->cable_type].full_check_current_1st;
 			}
-		} else {
-			eoc = charger->pdata->charging_current_table
-				[charger->cable_type].full_check_current_1st;
-		}
+		s2mpw01_set_topoff_current(charger->iodev, eoc);
 
-	s2mpw01_set_topoff_current(charger->iodev, eoc);
+		/* use TOP-OFF interrupt */
+		schedule_delayed_work(&charger->ta_work, msecs_to_jiffies(200));
+	}
 	s2mpw01_enable_charger_switch(charger, 1);
+}
 
-	/* use TOP-OFF interrupt */
-	schedule_delayed_work(&charger->ta_work, msecs_to_jiffies(200));
+static void s2mpw01_set_recharge_voltage(struct s2mpw01_charger_data *charger,
+		int recharge_voltage)
+{
+	unsigned int data;
+	dev_info(charger->dev, "%s : recharge voltage: %dmV\n",
+				__func__, recharge_voltage);
+	if (recharge_voltage <= 4150)
+		data = 0;
+	else if (recharge_voltage > 4150 && recharge_voltage <= 4500)
+		data = (recharge_voltage - 4150) / 50;
+	else
+		data = 0x7;
 
+	/* Enable recharge voltage setting bit */
+	data |= EN_RECHARGE_VOLTAGE_MASK;
+	sec_chg_update(charger->iodev, S2MPW01_CHG_REG_CTRL3,
+			data, EN_RECHARGE_VOLTAGE_MASK | RECHARGE_VOLTAGE_MASK);
 }
 
 /* here is set init charger data */
@@ -411,8 +430,16 @@ static bool s2mpw01_chg_init(struct s2mpw01_charger_data *charger)
 #if !(ENABLE_MIVR)
 	/* voltage regulatio disable does not exist mu005 */
 #endif
-	/* Top-off Timer Disable */
-	sec_chg_update(charger->iodev, S2MPW01_CHG_REG_CTRL8, 0x04, 0x04);
+
+	if (!charger->pdata->topoff_timer_enable) {
+		dev_info(charger->dev, "%s: Top-off timer disable\n", __func__);
+		sec_chg_update(charger->iodev, S2MPW01_CHG_REG_CTRL8,
+				NO_TIMEOUT_30M_MASK, NO_TIMEOUT_30M_MASK);
+	}
+
+	if (charger->pdata->chg_recharge_voltage)
+		s2mpw01_set_recharge_voltage(charger,
+					charger->pdata->chg_recharge_voltage);
 
 	/* Factory_mode initialization */
 	charger->factory_mode = false;
@@ -608,16 +635,15 @@ static int sec_chg_set_property(struct power_supply *psy,
 		} else {
 			dev_info(dev, "%s() Set charging, Cable type = %d\n",
 				 __func__, charger->cable_type);
+			charger->is_charging = true;
 			/* Enable charger */
 			s2mpw01_configure_charger(charger);
-			charger->is_charging = true;
 		}
 #if EN_TEST_READ
 		msleep(100);
 		s2mpw01_test_read(charger->iodev);
 #endif
 		break;
-	case POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN:
 	case POWER_SUPPLY_PROP_CURRENT_NOW:
 		dev_info(dev, "%s() is_charging %d\n", __func__, charger->is_charging);
 		/* set charging current */
@@ -659,6 +685,21 @@ static int sec_chg_set_property(struct power_supply *psy,
 		dev_info(dev, "%s() CHARGING_ENABLE\n", __func__);
 		/* charger->is_charging = val->intval; */
 		s2mpw01_enable_charger_switch(charger, val->intval);
+		break;
+	case POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN:
+		if(val->intval == SEC_BATTERY_RETAIL_MODE) {
+			charger->pdata->chg_float_voltage = 4000;
+			charger->pdata->full_check_type= SEC_BATTERY_FULLCHARGED_SOC;
+			charger->pdata->full_check_type_2nd = SEC_BATTERY_FULLCHARGED_SOC;
+			charger->pdata->charging_current_table = charger->pdata->charging_current_table_retail;
+			s2mpw01_set_regulation_voltage(charger, charger->pdata->chg_float_voltage);
+		} else {
+			charger->pdata->chg_float_voltage = 4400;
+			charger->pdata->full_check_type= SEC_BATTERY_FULLCHARGED_CHGPSY;
+			charger->pdata->full_check_type_2nd = SEC_BATTERY_FULLCHARGED_CHGPSY;
+			charger->pdata->charging_current_table = charger->pdata->charging_current_table_normal;
+			s2mpw01_set_regulation_voltage(charger, charger->pdata->chg_float_voltage);
+		}
 		break;
 	default:
 		return -EINVAL;
@@ -729,7 +770,6 @@ static irqreturn_t s2mpw01_tmrout_isr(int irq, void *data)
 	return IRQ_HANDLED;
 }
 
-#if defined(CONFIG_S2MPW01_RID_DETECT)
 static void s2mpw01_muic_init_detect(struct work_struct *work)
 {
 	struct s2mpw01_charger_data *charger =
@@ -781,7 +821,10 @@ static void s2mpw01_ta_detect(struct work_struct *work)
 	struct s2mpw01_charger_data *charger =
 		container_of(work, struct s2mpw01_charger_data, ta_work.work);
 
-	s2mpw01_topoff_interrupt_onoff(charger, 1);
+	if (charger->is_charging) {
+		if (batt_booting_chk)
+			s2mpw01_topoff_interrupt_onoff(charger, 1);
+	}
 }
 
 static void s2mpw01_muic_usb_detect(struct work_struct *work)
@@ -906,12 +949,17 @@ static irqreturn_t s2mpw01_muic_isr(int irq, void *data)
 
 		/* TOP-OFF interrupt masking */
 		s2mpw01_topoff_interrupt_onoff(charger, 0);
-
+#if !defined(CONFIG_SLP_KERNEL_ENG)
 		if (charger->jig_callback)
 			charger->jig_callback(0);
+#endif
 	} else if(irq == charger->irq_usb_on) {
 		/* usb boot on */
 		pr_info("%s: usb boot on irq\n", __func__);
+		if (charger->jig_callback)
+			charger->jig_callback(1);
+		if (charger->usb_callback && charger->is_usb_ready)
+			charger->usb_callback(1);
 		s2mpw01_factory_mode_setting(charger);
 	} else if(irq == charger->irq_uart_off) {
 		/* uart boot off */
@@ -1028,7 +1076,6 @@ static void s2mpw01_muic_free_irqs(struct s2mpw01_charger_data *charger)
 	FREE_IRQ(charger->irq_fact_leakage, charger, "muic-fact_leakage");
 	FREE_IRQ(charger->irq_jigon, charger, "muic-jigon");
 }
-#endif
 #if 0
 #ifdef CONFIG_OF
 static int s2mpw01_charger_parse_dt(struct device *dev,
@@ -1120,6 +1167,7 @@ static int s2mpw01_charger_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	mutex_init(&charger->io_lock);
+	device_init_wakeup(&pdev->dev, true);
 
 	charger->dev = &pdev->dev;
 	charger->iodev = s2mpw01;
@@ -1203,8 +1251,7 @@ static int s2mpw01_charger_probe(struct platform_device *pdev)
 
 	s2mpw01_test_read(charger->iodev);
 
-#if defined(CONFIG_S2MPW01_RID_DETECT)
-	if (system_rev >= 0x03) {
+	if (s2mpw01->using_rid_detect) {
 		ret = s2mpw01_muic_irq_init(charger);
 		if (ret) {
 			pr_err( "[muic] %s: failed to init muic irq(%d)\n", __func__, ret);
@@ -1233,7 +1280,6 @@ static int s2mpw01_charger_probe(struct platform_device *pdev)
 
 		INIT_DELAYED_WORK(&charger->rid_work, s2mpw01_muic_rid_check);
 	}
-#endif
 
 	/* charger topoff on/off work */
 	INIT_DELAYED_WORK(&charger->ta_work, s2mpw01_ta_detect);
@@ -1285,13 +1331,13 @@ static int s2mpw01_charger_probe(struct platform_device *pdev)
 	return 0;
 
 fail_init_irq:
-#if defined(CONFIG_S2MPW01_RID_DETECT)
-	s2mpw01_muic_free_irqs(charger);
-#endif
+	if (s2mpw01->using_rid_detect)
+		s2mpw01_muic_free_irqs(charger);
 err_power_supply_register:
 	destroy_workqueue(charger->charger_wqueue);
 /* err_create_wq: */
 	power_supply_unregister(&charger->psy_chg);
+	device_init_wakeup(&pdev->dev, false);
 	mutex_destroy(&charger->io_lock);
 	kfree(charger);
 	return ret;
@@ -1303,6 +1349,7 @@ static int s2mpw01_charger_remove(struct platform_device *pdev)
 		platform_get_drvdata(pdev);
 
 	power_supply_unregister(&charger->psy_chg);
+	device_init_wakeup(&pdev->dev, false);
 	mutex_destroy(&charger->io_lock);
 	kfree(charger);
 	return 0;

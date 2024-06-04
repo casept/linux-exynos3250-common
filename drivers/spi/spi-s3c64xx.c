@@ -900,8 +900,12 @@ out:
 static int s3c64xx_spi_prepare_transfer(struct spi_master *spi)
 {
 	struct s3c64xx_spi_driver_data *sdd = spi_master_get_devdata(spi);
+	int state;
 
-	pm_runtime_get_sync(&sdd->pdev->dev);
+	state = pm_runtime_get_sync(&sdd->pdev->dev);
+	if (state < 0)
+		dev_warn(&sdd->pdev->dev, "!!pm_runtime state : %d, %s\n",
+			state, __func__);
 
 	return 0;
 }
@@ -909,8 +913,12 @@ static int s3c64xx_spi_prepare_transfer(struct spi_master *spi)
 static int s3c64xx_spi_unprepare_transfer(struct spi_master *spi)
 {
 	struct s3c64xx_spi_driver_data *sdd = spi_master_get_devdata(spi);
+	int state;
 
-	pm_runtime_put(&sdd->pdev->dev);
+	state = pm_runtime_put(&sdd->pdev->dev);
+	if (state < 0)
+		dev_warn(&sdd->pdev->dev, "!!pm_runtime state : %d, %s\n",
+			state, __func__);
 
 	return 0;
 }
@@ -1228,6 +1236,16 @@ static int __init s3c64xx_spi_probe(struct platform_device *pdev)
 		goto err7;
 	}
 
+	/*
+	 * HACK: Sensorhub wants to use early_dpms for quickly writ-up
+	 * inform so, we need to set early_dpms also for actual spi-dev-0
+	 * VOLT project used spi-dev-0 for SPI communication
+	 */
+#if defined(CONFIG_DISPLAY_EARLY_DPMS) && (defined(CONFIG_MACH_VOLT) || defined(CONFIG_MACH_VOLT_NE))
+	if (pdev->id == 0)
+		device_set_early_complete(&pdev->dev, EARLY_COMP_MASTER);
+#endif
+
 	dev_dbg(&pdev->dev, "Samsung SoC SPI Driver loaded for Bus SPI-%d "
 					"with %d Slaves attached\n",
 					pdev->id, master->num_chipselect);
@@ -1337,10 +1355,7 @@ static int s3c64xx_spi_resume(struct device *dev)
 	}
 
 	spi_master_resume(master);
-#if defined(CONFIG_MACH_VOLT) && defined(CONFIG_PM_RUNTIME)
-	pm_runtime_enable(dev);
-	dev_err(dev,"%s, %d runtime_enable here, because it is called in resume_noirq\n", __func__, __LINE__);
-#endif
+
 	return 0;
 }
 #else

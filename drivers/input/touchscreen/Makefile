@@ -83,4 +83,8 @@ obj-$(CONFIG_TOUCHSCREEN_MELFAS_W)	+= mms_ts_w.o
 obj-$(CONFIG_TOUCHSCREEN_ZINITIX_BT432)	+= zxt_bt432_ts.o
 obj-$(CONFIG_TOUCHSCREEN_CYTTSP5)       += cyttsp5/
 obj-$(CONFIG_TOUCHSCREEN_ATMEL_MXT1664T)    += mxt_t/
+ifdef CONFIG_MACH_VOLT_NE
+obj-$(CONFIG_TOUCHSCREEN_ZINITIX_ZTW522) += zxt_ztw522_ts_volt_pro.o
+else
 obj-$(CONFIG_TOUCHSCREEN_ZINITIX_ZTW522) += zxt_ztw522_ts.o
+endif

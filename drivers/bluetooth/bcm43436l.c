@@ -138,7 +138,7 @@ static int bcm43436l_bt_rfkill_set_power(void *data, bool blocked)
 		gpio_set_value(GPIO_BT_EN, 1);
 		bt_is_running = 1;
 
-		msleep(100);
+		msleep(200);
 		bt_config_gpio_table(ARRAY_SIZE(bt_uart_on_table),
 					bt_uart_on_table);
 #ifdef CONFIG_SYSTEM_LOAD_ANALYZER

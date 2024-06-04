@@ -2,11 +2,51 @@
 #define _SLEEP_MONITOR_H
 
 #include <linux/random.h>
+#include <linux/ktime.h>
+
+extern struct dentry *slp_mon_d;
+extern unsigned int special_key;
+
+/* Debugging */
+enum SLEEP_MONITOR_DEBUG_LEVEL {
+	SLEEP_MONITOR_DEBUG_LABEL = BIT(0),
+	SLEEP_MONITOR_DEBUG_INFO = BIT(1),
+	SLEEP_MONITOR_DEBUG_ERR = BIT(2),
+	SLEEP_MONITOR_DEBUG_DEVICE = BIT(3),
+	SLEEP_MONITOR_DEBUG_DEBUG = BIT(4),
+	SLEEP_MONITOR_DEBUG_WORK = BIT(5),
+	SLEEP_MONITOR_DEBUG_INIT_TIMER = BIT(6),
+	SLEEP_MONITOR_DEBUG_READ_SUS_RES_TIME = BIT(7)
+};
+
+#define sleep_mon_dbg(debug_level_mask, fmt, ...)               \
+	do {                                    \
+		if (debug_level & debug_level_mask) \
+		pr_info("%s[%d]" fmt, SLEEP_MONITOR_DEBUG_PREFIX,   \
+				debug_level_mask, ##__VA_ARGS__);       \
+	} while (0)
+
+/* Each device info */
+typedef struct sleep_monitor_device {
+	struct sleep_monitor_ops *sm_ops;
+	void *priv;
+	int check_level;
+	bool skip_device;
+	char *device_name;
+	ktime_t sus_res_time[2];
+} sleep_monitor_device;
+
+/* Sleep monitor's ops structure */
+struct sleep_monitor_ops{
+	int (*read_cb_func)(void *priv, unsigned int *raw_val, int check_level, int caller_type);
+	int (*read64_cb_func)(void *priv, long long *raw_val, int check_level, int caller_type);
+};
+
 /* Assign each device's index number */
 enum SLEEP_MONITOR_DEVICE {
 /* CAUTION!!! Need to sync with sleep_monitor_device  in sleep_monitor.c */
 	SLEEP_MONITOR_BT = 0,
-	SLEEP_MONITOR_WIFI = 1,
+	SLEEP_MONITOR_DEV01 = 1,
 	SLEEP_MONITOR_IRQ = 2,
 	SLEEP_MONITOR_BATTERY = 3,
 	SLEEP_MONITOR_NFC = 4,
@@ -27,11 +67,11 @@ enum SLEEP_MONITOR_DEVICE {
 	SLEEP_MONITOR_REGULATOR = 19,
 	SLEEP_MONITOR_REGULATOR1 = 20,
 	SLEEP_MONITOR_PMDOMAINS = 21,
-	SLEEP_MONITOR_DEV22 = 22,
-	SLEEP_MONITOR_DEV23 = 23,
+	SLEEP_MONITOR_WIFI = 22,
+	SLEEP_MONITOR_WIFI1 = 23,
 	SLEEP_MONITOR_DEV24 = 24,
 	SLEEP_MONITOR_DEV25 = 25,
-	SLEEP_MONITOR_DEV26 = 26,
+	SLEEP_MONITOR_CPUIDLE = 26,
 	SLEEP_MONITOR_DEV27 = 27,
 	SLEEP_MONITOR_DEV28 = 28,
 	SLEEP_MONITOR_TCP = 29,
@@ -86,7 +126,6 @@ enum SLEEP_MONITOR_BOOLEAN {
 	SLEEP_MONITOR_BOOLEAN_TRUE = 1,
 };
 
-
 #define SLEEP_MONITOR_DEBUG_PREFIX "[slp_mon]"
 #define SLEEP_MONITOR_BIT_INT_SIZE 32
 #define SLEEP_MONITOR_DEVICE_BIT_WIDTH 4
@@ -105,16 +144,9 @@ enum SLEEP_MONITOR_BOOLEAN {
 #define SLEEP_MONITOR_STORE_BUFF 16*1024 /* 16K */
 #define SLEEP_MONITOR_SUSPEND_RESUME_PAIR_BUFF 1335
 
-/* Sleep monitor's ops structure */
-struct sleep_monitor_ops{
-	int (*read_cb_func)(void *priv, unsigned int *raw_val, int check_level, int caller_type);
-	int (*read64_cb_func)(void *priv, long long *raw_val, int check_level, int caller_type);
-};
-extern struct dentry *slp_mon_d;
-extern unsigned int special_key;
+
 #ifdef CONFIG_SLEEP_MONITOR
-extern int sleep_monitor_register_ops(void *dev, struct sleep_monitor_ops *ops,
-													int device_type);
+extern int sleep_monitor_register_ops(void *dev, struct sleep_monitor_ops *ops, int device_type);
 extern int sleep_monitor_unregister_ops(int device_type);
 extern int sleep_monitor_get_pretty(int *pretty_group, int type);
 extern int sleep_monitor_get_raw_value(int *raw_value);
@@ -122,14 +154,13 @@ extern char* get_type_marker(int type);
 extern void sleep_monitor_store_buf(char* buf, int ret, enum SLEEP_MONITOR_BOOLEAN);
 extern void sleep_monitor_update_req(void);
 #else
-static inline int sleep_monitor_register_ops(void *dev,
-						struct sleep_monitor_ops *ops, int device_type){}
+static inline int sleep_monitor_register_ops(void *dev, struct sleep_monitor_ops *ops, int device_type){}
 static inline int sleep_monitor_unregister_ops(int device_type){}
 static inline int sleep_monitor_get_pretty(int *pretty_group, int type){}
 static inline int sleep_monitor_get_raw_value(int *raw_value){}
 static char* get_type_marker(int type){}
 static void sleep_monitor_store_buf(char* buf, int ret, enum SLEEP_MONITOR_BOOLEAN){}
 static void sleep_monitor_update_req(void){}
-#endif
+#endif /* CONFIG_SLEEP_MONITOR */
 
-#endif
+#endif /* _SLEEP_MONITOR_H */

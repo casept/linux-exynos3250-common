@@ -1514,14 +1514,23 @@ static void panel_alpm_on(struct s6e36w1x01 *lcd, unsigned int enable)
 {
 	struct mipi_dsim_master_ops *ops = lcd_to_master_ops(lcd);
 	struct mipi_dsim_device *master = lcd_to_master(lcd);
+#ifndef CONFIG_MACH_VOLT_NE
 	int id3 = panel_id & 0xFF;
-
+#endif
 	ops->cmd_set_begin(master);
 	ops->cmd_write(master, MIPI_DSI_DCS_SHORT_WRITE,
 		DISPOFF, ARRAY_SIZE(DISPOFF));
 	ops->cmd_write(master, MIPI_DSI_DCS_LONG_WRITE,
 				TEST_KEY_ON_0, ARRAY_SIZE(TEST_KEY_ON_0));
 	if (enable) {
+#ifdef CONFIG_MACH_VOLT_NE
+		ops->cmd_write(master, MIPI_DSI_DCS_SHORT_WRITE_PARAM,
+			ALPM_ETC, ARRAY_SIZE(ALPM_ETC));
+		ops->cmd_write(master, MIPI_DSI_DCS_SHORT_WRITE_PARAM,
+			PANEL_UPDATE_ALPM, ARRAY_SIZE(PANEL_UPDATE_ALPM));
+		ops->cmd_write(master, MIPI_DSI_DCS_SHORT_WRITE_PARAM,
+			ALPM_ON, ARRAY_SIZE(ALPM_ON));
+#else
 		if (id3 < S6E36W1X01_REV01) {
 			ops->cmd_write(master, MIPI_DSI_DCS_SHORT_WRITE_PARAM,
 				ALPM_TEMP_ETC0, ARRAY_SIZE(ALPM_TEMP_ETC0));
@@ -1541,6 +1550,7 @@ static void panel_alpm_on(struct s6e36w1x01 *lcd, unsigned int enable)
 			ops->cmd_write(master, MIPI_DSI_DCS_SHORT_WRITE_PARAM,
 				ALPM_ON, ARRAY_SIZE(ALPM_ON));
 		}
+#endif
 	} else {
 		ops->cmd_write(master, MIPI_DSI_DCS_SHORT_WRITE_PARAM,
 				ALPM_ETC, ARRAY_SIZE(ALPM_ETC));

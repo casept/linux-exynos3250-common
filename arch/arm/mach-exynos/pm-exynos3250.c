@@ -47,18 +47,8 @@
 #include <linux/secgpio_dvs.h>
 #endif
 
-#ifdef CONFIG_PM_SLEEP_HISTORY
-#include <linux/power/sleep_history.h>
-#endif
-#ifdef CONFIG_ENERGY_MONITOR
-#include <linux/power/energy_monitor.h>
-#endif
-#ifdef CONFIG_SLEEP_MONITOR
-#include <linux/power/slp_mon_irq_dev.h>
-#endif
-
-#ifdef CONFIG_MFD_S2MPW01_CORE
-#include <linux/mfd/samsung/s2mpw01-irq.h>
+#ifdef CONFIG_IRQ_HISTORY
+#include <linux/power/irq_history.h>
 #endif
 
 void (*exynos_config_sleep_gpio)(void);
@@ -244,20 +234,6 @@ unsigned int ssp_int_wakeup = 0;
 #define MAX_NAME_LENGTH	0xff
 static char wakeup_device_name[MAX_NAME_LENGTH] = {0, };
 
-static void exynos_store_wakeup_device_name(const char* name)
-{
-	int name_length;
-
-	if (!name)
-		return;
-
-	name_length = strlen(name);
-	if (name_length > MAX_NAME_LENGTH)
-		name_length = MAX_NAME_LENGTH;
-
-	strncpy(&wakeup_device_name[0], name, name_length);
-}
-
 const char* exynos_get_wakeup_device_name(void)
 {
 	return &wakeup_device_name[0];
@@ -282,51 +258,16 @@ static void exynos_show_wakeup_reason_eint(void)
 
 		for_each_set_bit(bit, &ext_int_pend, 8) {
 			int irq = IRQ_EINT(reg_eintstart) + bit;
-			struct irq_desc *desc = irq_to_desc(irq);
 
 			if (eint_wakeup_mask & (1 << (reg_eintstart + bit)))
 				continue;
 
-			if (desc && desc->action && desc->action->name) {
-				if (!strncmp(desc->action->name, "s2mpw01-irq", 11)) {
-#ifdef CONFIG_MFD_S2MPW01_CORE
-					g_check_pmic_int = 1;
+#ifdef CONFIG_IRQ_HISTORY
+			add_irq_history(irq, NULL);
+#else
+			pr_info("Resume caused by IRQ %d\n", irq);
 #endif
-				} else {
-					pr_info("Resume caused by IRQ %d, %s\n", irq,
-						desc->action->name);
-#ifdef CONFIG_MFD_S2MPW01_CORE
-					g_check_pmic_int = 0;
-#endif
-					exynos_store_wakeup_device_name(desc->action->name);
 
-					if (!strncmp("SSP_Int", desc->action->name, 7))
-						ssp_int_wakeup = 1;
-					else
-						ssp_int_wakeup = 0;
-#ifdef CONFIG_SLEEP_MONITOR
-					add_slp_mon_irq_list(irq, (char*)desc->action->name);
-#endif
-				}
-			} else {
-				pr_info("Resume caused by IRQ %d\n", irq);
-#ifdef CONFIG_SLEEP_MONITOR
-				add_slp_mon_irq_list(irq, UNKNOWN_IRQ_NAME);
-#endif
-			}
-
-#ifdef CONFIG_MFD_S2MPW01_CORE
-			if (g_check_pmic_int != 1) {
-#endif
-#ifdef CONFIG_PM_SLEEP_HISTORY
-				sleep_history_marker(SLEEP_HISTORY_WAKEUP_IRQ, NULL, (void *)&irq);
-#endif
-#ifdef CONFIG_ENERGY_MONITOR
-				energy_monitor_record_wakeup_reason(irq);
-#endif
-#ifdef CONFIG_MFD_S2MPW01_CORE
-			}
-#endif
 			found = 1;
 		}
 	}

@@ -37,24 +37,6 @@
 /* definitions */
 #define	SEC_SIZEOF_POWER_SUPPLY_TYPE	13
 
-#if defined(CONFIG_BATTERY_SWELLING)
-#define BATT_SWELLING_DISCHG_TEMP		600
-#define BATT_SWELLING_DISCHG_TEMP_RECOV		550
-#define BATT_SWELLING_HIGH_TEMP_BLOCK		500
-#define BATT_SWELLING_HIGH_TEMP_RECOV		450
-#define BATT_SWELLING_LOW_TEMP_BLOCK		50
-#define BATT_SWELLING_LOW_TEMP_RECOV		100
-#define BATT_SWELLING_RECHG_VOLTAGE		4150
-
-enum sec_battery_swelling_mode {
-	SEC_BATTERY_NORMAL_MODE = 0,
-	SEC_BATTERY_HIGH_SWELLING_MODE,
-	SEC_BATTERY_LOW_SWELLING_MODE,
-	SEC_BATTERY_DISCHG_MODE,
-	SEC_BATTERY_UNKNOWN_MODE,
-};
-#endif
-
 enum sec_battery_voltage_mode {
 	/* average voltage */
 	SEC_BATTEY_VOLTAGE_AVERAGE = 0,
@@ -114,6 +96,10 @@ enum sec_battery_charging_mode {
 	SEC_BATTERY_CHARGING_RECHARGING,
 	/* abs charging*/
 	SEC_BATTERY_CHARGING_ABS,
+};
+
+enum {
+	SEC_BATTERY_RETAIL_MODE = 1,
 };
 
 struct sec_bat_adc_api {
@@ -422,6 +408,8 @@ struct sec_battery_platform_data {
 	sec_bat_adc_region_t *cable_adc_value;
 	/* charging current for type (0: not use) */
 	sec_charging_current_t *charging_current;
+	sec_charging_current_t *charging_current_normal;
+	sec_charging_current_t *charging_current_retail;
 	int *polling_time;
 	/* NO NEED TO BE CHANGED */
 
@@ -523,6 +511,7 @@ struct sec_battery_platform_data {
 	unsigned int recharge_condition_soc;
 	unsigned int recharge_condition_avgvcell;
 	unsigned int recharge_condition_vcell;
+	unsigned int swelling_recharge_condition_vcell;
 
 	/* for absolute timer (second) */
 	unsigned long charging_total_time;
@@ -564,6 +553,26 @@ struct sec_battery_platform_data {
 	int chg_float_voltage;
 	int chg_current_low_swelling;
 	sec_charger_functions_t chg_functions_setting;
+
+	/* battery swelling */
+	int swelling_high_temp_block;
+	int swelling_high_temp_recov;
+	int swelling_low_temp_block;
+	int swelling_low_temp_recov;
+	int swelling_low_temp_cur_block;
+	int swelling_low_temp_cur_recov;
+	int swelling_low_chg_current;
+	int swelling_high_chg_current;
+	unsigned int swelling_normal_float_voltage;
+	unsigned int swelling_drop_float_voltage;
+	unsigned int swelling_high_rechg_voltage;
+	unsigned int swelling_low_rechg_voltage;
+	unsigned int swelling_block_time;
+
+	int gpio_fuelgauge_switch;
+	int gpio_fg_switch_enable_setting;
+	int gpio_fuelgauge_switch2;
+	int gpio_fg_switch2_enable_setting;
 
 	/* ADC setting */
 	unsigned int adc_check_count;

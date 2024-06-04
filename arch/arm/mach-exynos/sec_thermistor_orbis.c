@@ -30,6 +30,10 @@ static int dummy_temp[SEC_THERM_ADC_MAX];
 #endif
 
 #define ADC_SAMPLING_CNT	7
+#ifdef CONFIG_SLP_KERNEL_ENG
+#define TEMPERATURE_CHANGE_DIRECT_VALUE	1
+#define TEMPERATURE_CHANGE_OFFSET	2
+#endif
 
 static struct device *temperature_dev;
 static struct sec_therm_info *g_info;
@@ -124,7 +128,7 @@ static int sec_therm_adc_to_temper(struct sec_therm_adc_info *adc_info,
 	return 0;
 }
 
-int sec_therm_get_adc_value(int therm_id, int *adc_val)
+int sec_therm_get_adc(int therm_id, int *adc)
 {
 	struct sec_therm_adc_info *adc_info;
 	int val, ret;
@@ -134,7 +138,7 @@ int sec_therm_get_adc_value(int therm_id, int *adc_val)
 		return -ENODEV;
 	}
 
-	if (!adc_val) {
+	if (!adc) {
 		pr_err("%s: Invalid args\n", __func__);
 		return -EINVAL;
 	}
@@ -149,12 +153,12 @@ int sec_therm_get_adc_value(int therm_id, int *adc_val)
 	if (ret)
 		return ret;
 
-	*adc_val = val;
-	pr_debug("%s: id:%d adc:%d\n", __func__, therm_id, *adc_val);
+	*adc = val;
+	pr_debug("%s: id:%d adc:%d\n", __func__, therm_id, *adc);
 
 	return 0;
 }
-EXPORT_SYMBOL(sec_therm_get_adc_value);
+EXPORT_SYMBOL(sec_therm_get_adc);
 
 int sec_therm_get_temp(int therm_id, int *temp)
 {
@@ -187,6 +191,19 @@ int sec_therm_get_temp(int therm_id, int *temp)
 		return ret;
 
 	*temp = t;
+#ifdef CONFIG_SLP_KERNEL_ENG
+	switch (debug_enabled[therm_id]) {
+	case TEMPERATURE_CHANGE_OFFSET:
+		*temp += dummy_temp[therm_id];
+		break;
+	case TEMPERATURE_CHANGE_DIRECT_VALUE:
+		*temp = dummy_temp[therm_id];
+		break;
+	default:
+		break;
+	}
+#endif
+
 	pr_debug("%s: id:%d t:%d (adc:%d)\n", __func__, therm_id, t, adc_val);
 
 	return 0;
@@ -228,8 +245,16 @@ static ssize_t sec_therm_show(struct device *dev,
 			index = 0;
 
 #ifdef CONFIG_SLP_KERNEL_ENG
-	if (debug_enabled[attr->index])
+	switch (debug_enabled[attr->index]) {
+	case TEMPERATURE_CHANGE_DIRECT_VALUE:
 		temp = dummy_temp[attr->index];
+		break;
+	case TEMPERATURE_CHANGE_OFFSET:
+		temp += dummy_temp[attr->index];
+		break;
+	default:
+		break;
+	}
 #endif
 
 	return sprintf(buf, "temp:%d adc:%d\n", temp/10, adc);
@@ -242,11 +267,18 @@ static ssize_t sec_therm_debug_store(struct device *dev,
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
 	int temp;
 
-	if (sscanf(buf, "%d", &temp) < 0)
-		return -EINVAL;
+	if (*buf=='o' && *(buf+1)==':') {
+		buf += 2;
+		if (kstrtoint(buf, 10, &temp))
+			return -EINVAL;
+		debug_enabled[attr->index] = TEMPERATURE_CHANGE_OFFSET;
+	} else {
+		if (kstrtoint(buf, 10, &temp))
+			return -EINVAL;
+		debug_enabled[attr->index] = TEMPERATURE_CHANGE_DIRECT_VALUE;
+	}
 
-	debug_enabled[attr->index] = 1;
-	dummy_temp[attr->index] = temp;
+	dummy_temp[attr->index] = temp*10;
 
 	pr_info("%s: Set therm_id %d temp to %d\n", __func__, attr->index, temp);
 	return cnt;

@@ -52,7 +52,11 @@ static struct zxt_ts_platform_data zxt_ts_pdata = {
 	.gpio_config = ztw522_gpio_config,
 	.x_resolution = 216,
 	.y_resolution = 432,
+#ifdef CONFIG_MACH_VOLT_NE
+	.fw_name = "zinitix_volt_ne.fw",
+#else
 	.fw_name = "zinitix_ts.fw",
+#endif
 	.model_name = "ztw522",
 	.page_size = 0,
 	.orientation = 0,

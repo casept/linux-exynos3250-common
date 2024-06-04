@@ -46,7 +46,7 @@
 #include <linux/isa1000a_vibrator.h>
 #endif
 
-#ifdef CONFIG_MACH_VOLT
+#if defined(CONFIG_MACH_VOLT) || defined(CONFIG_MACH_VOLT_NE)
 #ifdef CONFIG_FF_DC_VIBRATOR
 #include <linux/ff_dc_vibrator.h>
 #endif /* end CONFIG_FF_DC_VIBRATOR */
@@ -124,7 +124,7 @@ static struct platform_device isa1000a_haptic_device = {
 };
 #endif
 
-#ifdef CONFIG_MACH_VOLT
+#if defined(CONFIG_MACH_VOLT) || defined(CONFIG_MACH_VOLT_NE)
 #ifdef CONFIG_FF_DC_VIBRATOR
 struct ff_dc_vibrator_platform_data ff_dc_vibrator_data = {
 	.regulator_name = "v_mot_2.7",
@@ -338,7 +338,7 @@ static struct platform_device *universal3250_devices[] __initdata = {
 	&isa1000a_haptic_device,
 #endif
 
-#ifdef CONFIG_MACH_VOLT
+#if defined(CONFIG_MACH_VOLT) || defined(CONFIG_MACH_VOLT_NE)
 #ifdef CONFIG_FF_DC_VIBRATOR
 	&ff_dc_haptic_device,
 #endif /* end CONFIG_FF_DC_VIBRATOR */
@@ -498,6 +498,17 @@ MACHINE_START(SMARTKEY, "SMARTKEY")
 MACHINE_END
 #elif defined(CONFIG_MACH_VOLT)
 MACHINE_START(VOLT, "VOLT")
+	.init_irq	= exynos3_init_irq,
+	.init_early	= universal3250_init_early,
+	.map_io		= universal3250_map_io,
+	.handle_irq	= gic_handle_irq,
+	.init_machine	= universal3250_machine_init,
+	.timer		= &exynos4_timer,
+	.restart	= exynos3_restart,
+	.reserve	= exynos_reserve_mem,
+MACHINE_END
+#elif defined(CONFIG_MACH_VOLT_NE)
+MACHINE_START(VOLT, "VOLT_NE")
 	.init_irq	= exynos3_init_irq,
 	.init_early	= universal3250_init_early,
 	.map_io		= universal3250_map_io,

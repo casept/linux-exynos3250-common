@@ -84,7 +84,8 @@ static enum power_supply_property s2mpw01_fuelgauge_props[] = {
 };
 
 enum {
-	TEMP_LEVEL_LOW = 0,
+	TEMP_LEVEL_VERY_LOW = 0,
+	TEMP_LEVEL_LOW,
 	TEMP_LEVEL_MID,
 	TEMP_LEVEL_HIGH,
 };
@@ -177,6 +178,20 @@ static int s2mpw01_fg_read_reg(struct sec_pmic_dev *iodev, int reg, u8 *buf)
 #endif
 	return ret;
 }
+
+static void s2mpw01_restart_gauging(struct s2mpw01_fuelgauge_data *fuelgauge)
+{
+	u8 temp;
+
+	s2mpw01_fg_read_reg_byte(fuelgauge->iodev, S2MPW01_FG_REG_START, &temp);
+	temp |= 0x33;
+	s2mpw01_fg_write_reg_byte(fuelgauge->iodev, S2MPW01_FG_REG_START, temp);
+
+	dev_info(fuelgauge->dev, "%s: dump done\n", __func__);
+
+	msleep(500);
+}
+
 #if 0
 static int s2mpw01_init_regs(struct s2mpw01_fuelgauge_data *fuelgauge)
 {
@@ -230,7 +245,9 @@ static int s2mpw01_set_temperature(struct s2mpw01_fuelgauge_data *fuelgauge,
 
 	val = temperature / 10;
 
-	if (val < 15)
+	if (val < 0)
+		temperature_level = TEMP_LEVEL_VERY_LOW;
+	else if (val < 15)
 		temperature_level = TEMP_LEVEL_LOW;
 	else if (val > 35)
 		temperature_level = TEMP_LEVEL_HIGH;
@@ -248,31 +265,31 @@ static int s2mpw01_set_temperature(struct s2mpw01_fuelgauge_data *fuelgauge,
 	temp2 &= 0x0F;
 
 	if (val < 15) {
-		s2mpw01_fg_write_reg_byte(fuelgauge->iodev, 0x0B, 0x00);
-		s2mpw01_fg_write_reg_byte(fuelgauge->iodev, 0x0E, 0xC0);
-		s2mpw01_fg_write_reg_byte(fuelgauge->iodev, 0x0F, 0xC0);
+		s2mpw01_fg_write_reg_byte(fuelgauge->iodev, S2MPW01_FG_REG_RZADJ_CHG2, fuelgauge->pdata->bat_param_low[0]);
+		s2mpw01_fg_write_reg_byte(fuelgauge->iodev, S2MPW01_FG_REG_RZADJ, fuelgauge->pdata->bat_param_low[1]);
+		s2mpw01_fg_write_reg_byte(fuelgauge->iodev, S2MPW01_FG_REG_RZADJ_CHG, fuelgauge->pdata->bat_param_low[2]);
 		if (val < 0)
-			temp1 |= 0xB0;
+			temp1 |= fuelgauge->pdata->bat_param_very_low[3];
 		else
-			temp1 |= 0xC0;
+			temp1 |= fuelgauge->pdata->bat_param_low[3];
 		s2mpw01_fg_write_reg_byte(fuelgauge->iodev, 0x19, temp1);
-		temp2 |= 0x20;
+		temp2 |= fuelgauge->pdata->bat_param_low[4];
 		s2mpw01_fg_write_reg_byte(fuelgauge->iodev, 0x28, temp2);
 	} else if (val >= 15 && val <= 35) {
-		s2mpw01_fg_write_reg_byte(fuelgauge->iodev, 0x0B, 0x00);
-		s2mpw01_fg_write_reg_byte(fuelgauge->iodev, 0x0E, 0xE0);
-		s2mpw01_fg_write_reg_byte(fuelgauge->iodev, 0x0F, 0x80);
-		temp1 |= 0xE0;
+		s2mpw01_fg_write_reg_byte(fuelgauge->iodev, S2MPW01_FG_REG_RZADJ_CHG2, fuelgauge->pdata->bat_param_normal[0]);
+		s2mpw01_fg_write_reg_byte(fuelgauge->iodev, S2MPW01_FG_REG_RZADJ, fuelgauge->pdata->bat_param_normal[1]);
+		s2mpw01_fg_write_reg_byte(fuelgauge->iodev, S2MPW01_FG_REG_RZADJ_CHG, fuelgauge->pdata->bat_param_normal[2]);
+		temp1 |= fuelgauge->pdata->bat_param_normal[3];
 		s2mpw01_fg_write_reg_byte(fuelgauge->iodev, 0x19, temp1);
-		temp2 |= 0x10;
+		temp2 |= fuelgauge->pdata->bat_param_normal[4];
 		s2mpw01_fg_write_reg_byte(fuelgauge->iodev, 0x28, temp2);
 	} else if (val > 35) {
-		s2mpw01_fg_write_reg_byte(fuelgauge->iodev, 0x0B, 0x80);
-		s2mpw01_fg_write_reg_byte(fuelgauge->iodev, 0x0E, 0x66);
-		s2mpw01_fg_write_reg_byte(fuelgauge->iodev, 0x0F, 0xE0);
-		temp1 |= 0xF0;
+		s2mpw01_fg_write_reg_byte(fuelgauge->iodev, S2MPW01_FG_REG_RZADJ_CHG2, fuelgauge->pdata->bat_param_high[0]);
+		s2mpw01_fg_write_reg_byte(fuelgauge->iodev, S2MPW01_FG_REG_RZADJ, fuelgauge->pdata->bat_param_high[1]);
+		s2mpw01_fg_write_reg_byte(fuelgauge->iodev, S2MPW01_FG_REG_RZADJ_CHG, fuelgauge->pdata->bat_param_high[2]);
+		temp1 |= fuelgauge->pdata->bat_param_high[3];
 		s2mpw01_fg_write_reg_byte(fuelgauge->iodev, 0x19, temp1);
-		temp2 |= 0x00;
+		temp2 |= fuelgauge->pdata->bat_param_high[4];
 		s2mpw01_fg_write_reg_byte(fuelgauge->iodev, 0x28, temp2);
 	}
 
@@ -345,9 +362,9 @@ static int s2mpw01_get_soc(struct s2mpw01_fuelgauge_data *fuelgauge)
 
 	s2mpw01_fg_read_reg_byte(fuelgauge->iodev, 0x19, &temp1);
 	s2mpw01_fg_read_reg_byte(fuelgauge->iodev, 0x28, &temp2);
-	s2mpw01_fg_read_reg_byte(fuelgauge->iodev, 0x0B, &temp3);
-	s2mpw01_fg_read_reg_byte(fuelgauge->iodev, 0x0E, &temp4);
-	s2mpw01_fg_read_reg_byte(fuelgauge->iodev, 0x0F, &temp5);
+	s2mpw01_fg_read_reg_byte(fuelgauge->iodev, S2MPW01_FG_REG_RZADJ_CHG2, &temp3);
+	s2mpw01_fg_read_reg_byte(fuelgauge->iodev, S2MPW01_FG_REG_RZADJ, &temp4);
+	s2mpw01_fg_read_reg_byte(fuelgauge->iodev, S2MPW01_FG_REG_RZADJ_CHG, &temp5);
 	dev_info(fuelgauge->dev, "%s: temp  0x19:0x%x, 0x28:0x%x, 0x0B:0x%x, 0x0E:0x%x, 0x0F:0x%x, level: %d\n", __func__, \
 		temp1, temp2, temp3, temp4, temp5, fuelgauge->before_temp_level);
 
@@ -385,9 +402,9 @@ static int s2mpw01_get_rawsoc(struct s2mpw01_fuelgauge_data *fuelgauge)
 
 	s2mpw01_fg_read_reg_byte(fuelgauge->iodev, 0x19, &temp1);
 	s2mpw01_fg_read_reg_byte(fuelgauge->iodev, 0x28, &temp2);
-	s2mpw01_fg_read_reg_byte(fuelgauge->iodev, 0x0B, &temp3);
-	s2mpw01_fg_read_reg_byte(fuelgauge->iodev, 0x0E, &temp4);
-	s2mpw01_fg_read_reg_byte(fuelgauge->iodev, 0x0F, &temp5);
+	s2mpw01_fg_read_reg_byte(fuelgauge->iodev, S2MPW01_FG_REG_RZADJ_CHG2, &temp3);
+	s2mpw01_fg_read_reg_byte(fuelgauge->iodev, S2MPW01_FG_REG_RZADJ, &temp4);
+	s2mpw01_fg_read_reg_byte(fuelgauge->iodev, S2MPW01_FG_REG_RZADJ_CHG, &temp5);
 	dev_info(fuelgauge->dev, "%s: temp  0x19:0x%x, 0x28:0x%x, 0x0B:0x%x, 0x0E:0x%x, 0x0F:0x%x, level: %d\n", __func__, \
 		temp1, temp2, temp3, temp4, temp5, fuelgauge->before_temp_level);
 
@@ -871,9 +888,9 @@ static int s2mpw01_fg_set_property(struct power_supply *psy,
 		}
 		break;
 	case POWER_SUPPLY_PROP_TEMP:
-	case POWER_SUPPLY_PROP_TEMP_AMBIENT:
 		s2mpw01_set_temperature(fuelgauge, val->intval);
 		break;
+	case POWER_SUPPLY_PROP_TEMP_AMBIENT:
 	case POWER_SUPPLY_PROP_ENERGY_NOW:
 		break;
 	case POWER_SUPPLY_PROP_ENERGY_FULL_DESIGN:
@@ -885,6 +902,11 @@ static int s2mpw01_fg_set_property(struct power_supply *psy,
 		break;
 	case POWER_SUPPLY_PROP_CHARGE_TYPE:
 		/* s2mpw01_fg_reset_capacity_by_jig_connection(fuelgauge->iodev); */
+		break;
+	case POWER_SUPPLY_PROP_CALIBRATE:
+		dev_info(fuelgauge->dev,
+			"%s: POWER_SUPPLY_PROP_CALIBRATE \n", __func__);
+		s2mpw01_restart_gauging(fuelgauge);
 		break;
 	default:
 		return -EINVAL;
@@ -910,10 +932,10 @@ static void s2mpw01_fg_isr_work(struct work_struct *work)
 	if (fg_alert_status & 0x02)
 		pr_info("%s : Battery Level is Very Low!\n", __func__);
 
-	if (!fg_alert_status) {
+	if (!fg_alert_status)
 		pr_info("%s : SOC or Volage is Good!\n", __func__);
-		wake_unlock(&fuelgauge->fuel_alert_wake_lock);
-	}
+
+	wake_unlock(&fuelgauge->fuel_alert_wake_lock);
 }
 
 static irqreturn_t s2mpw01_fg_irq_thread(int irq, void *irq_data)
@@ -1068,6 +1090,10 @@ static int s2mpw01_fuelgauge_probe(struct platform_device *pdev)
 	fuelgauge->pdata->fuelgauge_name = NULL;
 	fuelgauge->pdata->fuel_alert_soc = pdata->fuel_alert_soc;
 	fuelgauge->pdata->repeated_fuelalert = pdata->repeated_fuelalert;
+	memcpy(&fuelgauge->pdata->bat_param_normal, &pdata->bat_param_normal, sizeof(u8)*5);
+	memcpy(&fuelgauge->pdata->bat_param_high, &pdata->bat_param_high, sizeof(u8)*5);
+	memcpy(&fuelgauge->pdata->bat_param_low, &pdata->bat_param_low, sizeof(u8)*5);
+	memcpy(&fuelgauge->pdata->bat_param_very_low, &pdata->bat_param_very_low, sizeof(u8)*5);
 #endif
 
 	platform_set_drvdata(pdev, fuelgauge);
@@ -1164,8 +1190,9 @@ err_parse_dt_nomem:
 	return ret;
 }
 
-static void s2mpw01_fuelgauge_shutdown(struct platform_device *pdev)
+static void s2mpw01_fuelgauge_shutdown(struct device *dev)
 {
+
 }
 
 static int s2mpw01_fuelgauge_remove(struct platform_device *pdev)
@@ -1181,11 +1208,13 @@ static int s2mpw01_fuelgauge_remove(struct platform_device *pdev)
 #if defined CONFIG_PM
 static int s2mpw01_fuelgauge_suspend(struct device *dev)
 {
+
 	return 0;
 }
 
 static int s2mpw01_fuelgauge_resume(struct device *dev)
 {
+
 	return 0;
 }
 #else
@@ -1201,11 +1230,11 @@ static struct platform_driver s2mpw01_fuelgauge_driver = {
 		.name = "s2mpw01-fuelgauge",
 		.owner = THIS_MODULE,
 		.pm = &s2mpw01_fuelgauge_pm_ops,
+		.shutdown   = s2mpw01_fuelgauge_shutdown,
 		//.of_match_table = s2mpw01_fuelgauge_match_table,
 	},
 	.probe  = s2mpw01_fuelgauge_probe,
 	.remove = s2mpw01_fuelgauge_remove,
-	.shutdown   = s2mpw01_fuelgauge_shutdown,
 };
 
 static int __init s2mpw01_fuelgauge_init(void)

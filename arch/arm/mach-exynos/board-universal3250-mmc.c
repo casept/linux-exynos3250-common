@@ -81,7 +81,7 @@ static void exynos_dwmci0_set_data_gpio_pullup(unsigned int pin)
 		s3c_gpio_setpull(pin, S3C_GPIO_PULL_UP);
 	else
 		s3c_gpio_setpull(pin, S3C_GPIO_PULL_NONE);
-#elif defined(CONFIG_MACH_VOLT)
+#elif defined(CONFIG_MACH_VOLT) || defined(CONFIG_MACH_VOLT_NE)
 	s3c_gpio_setpull(pin, S3C_GPIO_PULL_UP);
 #else
 	s3c_gpio_setpull(pin, S3C_GPIO_PULL_NONE);
@@ -228,7 +228,7 @@ static void exynos_dwmci1_cfg_gpio(int width)
 			s3c_gpio_setpull(gpio, S3C_GPIO_PULL_NONE);
 		else
 			s3c_gpio_setpull(gpio, S3C_GPIO_PULL_UP);
-#ifdef CONFIG_MACH_VOLT
+#if defined(CONFIG_MACH_VOLT) || defined(CONFIG_MACH_VOLT_NE)
 		s5p_gpio_set_drvstr(gpio, S5P_GPIO_DRVSTR_LV1);
 #else
 		s5p_gpio_set_drvstr(gpio, S5P_GPIO_DRVSTR_LV4);
@@ -242,7 +242,7 @@ static void exynos_dwmci1_cfg_gpio(int width)
 				gpio <= EXYNOS3_GPK1(6); gpio++) {
 			s3c_gpio_cfgpin(gpio, S3C_GPIO_SFN(2));
 			s3c_gpio_setpull(gpio, S3C_GPIO_PULL_UP);
-#ifdef CONFIG_MACH_VOLT
+#if defined(CONFIG_MACH_VOLT) || defined(CONFIG_MACH_VOLT_NE)
 			s5p_gpio_set_drvstr(gpio, S5P_GPIO_DRVSTR_LV1);
 #else
 			s5p_gpio_set_drvstr(gpio, S5P_GPIO_DRVSTR_LV4);
@@ -253,7 +253,7 @@ static void exynos_dwmci1_cfg_gpio(int width)
 		gpio = EXYNOS3_GPK1(3);
 		s3c_gpio_cfgpin(gpio, S3C_GPIO_SFN(2));
 		s3c_gpio_setpull(gpio, S3C_GPIO_PULL_UP);
-#ifdef CONFIG_MACH_VOLT
+#if defined(CONFIG_MACH_VOLT) || defined(CONFIG_MACH_VOLT_NE)
 		s5p_gpio_set_drvstr(gpio, S5P_GPIO_DRVSTR_LV1);
 #else
 		s5p_gpio_set_drvstr(gpio, S5P_GPIO_DRVSTR_LV4);

@@ -56,6 +56,7 @@ static DECLARE_WAIT_QUEUE_HEAD(alarm_wait_queue);
 static uint32_t alarm_pending;
 static uint32_t alarm_enabled;
 static uint32_t wait_pending;
+int system_tz;
 
 struct devalarm {
 	union {
@@ -105,9 +106,24 @@ static void devalarm_cancel(struct devalarm *alrm)
 }
 
 
+static void alarm_set_tz(int tz_offset)
+{
+	/* Set system timezone from user space */
+	system_tz = tz_offset;
+	pr_info("%s : %d\n", __func__, system_tz);
+}
+#ifdef CONFIG_SUPPORT_ALARM_TIMEZONE_DST
+int alarm_get_tz(void)
+{
+	return system_tz;
+}
+#endif
+EXPORT_SYMBOL(alarm_get_tz);
+
 static long alarm_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
 	int rv = 0;
+	int tz_offset;
 	unsigned long flags;
 	struct timespec new_alarm_time;
 	struct timespec new_rtc_time;
@@ -137,6 +153,14 @@ static long alarm_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	}
 
 	switch (ANDROID_ALARM_BASE_CMD(cmd)) {
+	case ANDROID_ALARM_SET_TZ:
+		pr_info("%s SET Timezone\n", __func__);
+		if (copy_from_user(&tz_offset, (void __user *)arg, sizeof(tz_offset)))
+			return -EFAULT;
+
+		alarm_set_tz(tz_offset);
+		break;
+
 	case ANDROID_ALARM_CLEAR(0):
 		spin_lock_irqsave(&alarm_slock, flags);
 		pr_alarm(IO, "alarm %d clear\n", alarm_type);

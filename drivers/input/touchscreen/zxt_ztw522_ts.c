@@ -267,7 +267,8 @@ static s32 ztw522_write_cmd(struct i2c_client *client, u16 reg)
 retry:
 	ret = i2c_master_send(client , (u8 *)&reg , 2);
 	if (ret < 0) {
-		zinitix_delay(I2C_TX_DELAY);
+		if(reg != ztw522_I2C_START_CMD)
+			zinitix_delay(I2C_TX_DELAY);
 		if (++count < I2C_RETRY_TIMES) {
 			goto retry;
 		} else {
@@ -346,6 +347,27 @@ static void ztw522_cover_set(struct ztw522_ts_info *info)
 	ztw522_set_optional_mode(info, true);
 }
 
+static void ztw522_chip_reset(struct ztw522_ts_info *info)
+{
+	struct i2c_client *client = info->client;
+
+	down(&info->work_lock);
+	info->device_enabled = false;
+	info->work_state = SUSPEND;
+	disable_irq(info->irq);
+	ztw522_clear_report_data(info);
+	ztw522_power_control(info, POWER_OFF);
+	ztw522_power_control(info, POWER_ON_SEQUENCE);
+
+	if (!ztw522_mini_init_touch(info))
+		dev_err(&client->dev, "%s: Failed to mini_init_touch\n", __func__);
+
+	enable_irq(info->irq);
+	info->device_enabled = true;
+	info->work_state = NOTHING;
+	up(&info->work_lock);
+}
+
 #if USE_TSP_TA_CALLBACKS
 static void ztw522_set_ta_status(struct ztw522_ts_info *info)
 {
@@ -365,14 +387,24 @@ static void ztw522_ts_charger_status_cb(struct tsp_callbacks *cb, int status)
 
 	info->ta_connected = !!status;
 
-	if (info->device_enabled) {
-		ztw522_send_start_event(info);
-		ztw522_set_ta_status(info);
-		ztw522_write_cmd(client, ztw522_I2C_END_CMD);
-	}
-
-	dev_info(&info->client->dev, "%s: TA %s\n", __func__,
+	if ((info->device_enabled) &&
+	    (!info->gesture_enable) &&
+	    (info->work_state == NOTHING)) {
+		if (status) {
+			ztw522_send_start_event(info);
+			ztw522_set_ta_status(info);
+			ztw522_write_cmd(client, ztw522_I2C_END_CMD);
+			dev_info(&info->client->dev, "%s: TA %s.  device enable.\n", __func__,
+				info->ta_connected ? "connected" : "disconnected");
+		} else {
+			dev_info(&info->client->dev,
+				"%s: TA disconnected. TSP reset start\n", __func__);
+			ztw522_chip_reset(info);
+		}
+	} else
+		dev_info(&info->client->dev, "%s: TA %s. device disable.\n", __func__,
 			info->ta_connected ? "connected" : "disconnected");
+
 }
 
 extern struct tsp_callbacks *ztw522_charger_callbacks;
@@ -391,6 +423,7 @@ static bool get_raw_data(struct ztw522_ts_info *info, u8 *buff, int skip_cnt)
 	int sz;
 	int i;
 	u32 temp_sz;
+	u32 limitcnt;
 
 	disable_irq(info->irq);
 
@@ -406,17 +439,30 @@ static bool get_raw_data(struct ztw522_ts_info *info, u8 *buff, int skip_cnt)
 	info->work_state = RAW_DATA;
 
 	for (i = 0; i < skip_cnt; i++) {
-		while (gpio_get_value(pdata->gpio_int))
+		limitcnt = 0;
+		while (gpio_get_value(pdata->gpio_int)) {
 			zinitix_delay(GPIO_GET_DELAY);
-
+			limitcnt++;
+			if(limitcnt > MAX_LIMIT_CNT) {
+				dev_err(&info->client->dev, "%s: gpio_int wait cnt over. \n", __func__);
+				break;
+			}
+		}
 		ztw522_write_cmd(client, ztw522_CLEAR_INT_STATUS_CMD);
 		zinitix_delay(1);
 	}
 
 	sz = total_node * 2;
 
-	while (gpio_get_value(pdata->gpio_int))
+	limitcnt = 0;
+	while (gpio_get_value(pdata->gpio_int)) {
 		zinitix_delay(1);
+		limitcnt++;
+		if(limitcnt > MAX_LIMIT_CNT) {
+			dev_err(&info->client->dev, "%s: gpio_int wait cnt over. \n", __func__);
+			break;
+		}
+	}
 
 	for (i = 0; sz > 0; i++) {
 		temp_sz = I2C_BUFFER_SIZE;
@@ -1565,6 +1611,7 @@ static bool ztw522_mini_init_touch(struct ztw522_ts_info *info)
 fail_mini_init:
 	dev_err(&client->dev, "%s: Failed to initialize mini init\n", __func__);
 	ztw522_power_control(info, POWER_OFF);
+	msleep(100);
 	ztw522_power_control(info, POWER_ON_SEQUENCE);
 
 	if (!ztw522_init_touch(info, false)) {
@@ -1941,7 +1988,7 @@ static int ztw522_resume(struct device *dev)
 		return 0;
 	}
 
-	dev_info(&client->dev, "%s: work_state:[%d], gesture:[%s]\n",
+	dev_dbg(&client->dev, "%s: work_state:[%d], gesture:[%s]\n",
 		__func__, info->work_state, info->gesture_enable ? "enable":"disable");
 
 	if (info->gesture_enable) {
@@ -1965,7 +2012,7 @@ static int ztw522_suspend(struct device *dev)
 		return 0;
 	}
 
-	dev_info(&client->dev, "%s: work_state:[%d], gesture:[%s]\n",
+	dev_dbg(&client->dev, "%s: work_state:[%d], gesture:[%s]\n",
 		__func__, info->work_state, info->gesture_enable ? "enable":"disable");
 
 	if (info->gesture_enable) {
@@ -1998,11 +2045,11 @@ static int ztw522_input_open(struct input_dev *dev)
 
 	ztw522_power_control(info, POWER_ON_SEQUENCE);
 
-	info->device_enabled = true;
-	info->work_state = NOTHING;
-
 	if (!ztw522_mini_init_touch(info))
 		dev_err(&client->dev, "%s: Failed to resume\n", __func__);
+
+	info->device_enabled = true;
+	info->work_state = NOTHING;
 
 	enable_irq(info->irq);
 	up(&info->work_lock);
@@ -2041,7 +2088,7 @@ static void ztw522_input_close(struct input_dev *dev)
 /* For DND*/
 static bool ztw522_set_touchmode(struct ztw522_ts_info *info, u16 value)
 {
-	int i;
+	int i, ret, retry_cnt = 0;
 
 	disable_irq(info->irq);
 
@@ -2060,30 +2107,132 @@ static bool ztw522_set_touchmode(struct ztw522_ts_info *info, u16 value)
 	else
 		info->touch_mode = value;
 
-	dev_info(&info->client->dev, "%s: touchkey_testmode = %d\n",
+	dev_info(&info->client->dev, "%s: %d\n",
 			__func__, info->touch_mode);
 
-	if (ztw522_write_reg(info->client, ztw522_TOUCH_MODE,
-			info->touch_mode) != I2C_SUCCESS)
+retry:
+	ret = ztw522_write_reg(info->client, ZINITIX_INTERNAL_FLAG_01, 0x00);
+	if (ret != I2C_SUCCESS) {
 		dev_err(&info->client->dev,
-			"%s: Fail to set ZINITX_TOUCH_MODE %d.\n",
+			"%s: Failed to read INTERNAL_FLAG_01[%d]\n",
 			__func__, info->touch_mode);
+		if (retry_cnt < I2C_RETRY_TIMES) {
+			retry_cnt++;
+			goto retry;
+		} else
+			goto out;
+	}
 
-	if (ztw522_write_cmd(info->client, ztw522_SWRESET_CMD) != I2C_SUCCESS) {
+	ret = ztw522_write_reg(info->client, ZINITIX_INTERNAL_FLAG_02, 0x00);
+	if (ret != I2C_SUCCESS) {
+		dev_err(&info->client->dev,
+			"%s: Failed to read INTERNAL_FLAG_02[%d]\n",
+			__func__, info->touch_mode);
+		if (retry_cnt < I2C_RETRY_TIMES) {
+			retry_cnt++;
+			goto retry;
+		} else
+			goto out;
+	}
+
+	if (info->touch_mode == TOUCH_CND_MODE) {
+		ret = ztw522_write_reg(info->client, ztw522_M_U_COUNT, SEC_M_U_COUNT);
+		if (ret != I2C_SUCCESS) {
+			dev_err(&info->client->dev,
+				"%s: Fail to set U Count [%d]\n",
+				__func__, info->touch_mode);
+			if (retry_cnt < I2C_RETRY_TIMES) {
+				retry_cnt++;
+				goto retry;
+			} else
+				goto out;
+		}
+
+		ret = ztw522_write_reg(info->client, ztw522_M_N_COUNT, SEC_M_N_COUNT);
+		if (ret != I2C_SUCCESS) {
+			dev_err(&info->client->dev,
+				"%s: Fail to set N Count [%d]\n",
+				__func__, info->touch_mode);
+			if (retry_cnt < I2C_RETRY_TIMES) {
+				retry_cnt++;
+				goto retry;
+			} else
+				goto out;
+		}
+
+		ret = ztw522_write_reg(info->client, ztw522_AFE_FREQUENCY, SEC_M_FREQUENCY);
+		if (ret != I2C_SUCCESS) {
+			dev_err(&info->client->dev,
+				"%s: Fail to set AFE Frequency [%d]\n",
+				__func__, info->touch_mode);
+			if (retry_cnt < I2C_RETRY_TIMES) {
+				retry_cnt++;
+				goto retry;
+			} else
+				goto out;
+		}
+
+		ret = ztw522_write_reg(info->client, ztw522_M_RST0_TIME, SEC_M_RST0_TIME);
+		if (ret != I2C_SUCCESS) {
+			dev_err(&info->client->dev,
+				"%s: Fail to set RST0 Time [%d]\n",
+				__func__, info->touch_mode);
+			if (retry_cnt < I2C_RETRY_TIMES) {
+				retry_cnt++;
+				goto retry;
+			} else
+				goto out;
+		}
+	}
+
+	ret = ztw522_write_reg(info->client, ztw522_TOUCH_MODE, info->touch_mode);
+	if (ret != I2C_SUCCESS) {
+		dev_err(&info->client->dev,
+			"%s: Fail to set ZINITX_TOUCH_MODE [%d]\n",
+			__func__, info->touch_mode);
+		if (retry_cnt < I2C_RETRY_TIMES) {
+			retry_cnt++;
+			goto retry;
+		} else
+			goto out;
+	}
+
+	ret = ztw522_write_cmd(info->client, ztw522_SWRESET_CMD);
+	if (ret != I2C_SUCCESS) {
 		dev_err(&info->client->dev,
 			"%s: Failed to write reset command\n", __func__);
+		if (retry_cnt < I2C_RETRY_TIMES) {
+			retry_cnt++;
+			goto retry;
+		} else
+			goto out;
 	}
+
+	zinitix_delay(400);
 
 	/* clear garbage data */
 	for (i = 0; i <= INT_CLEAR_RETRY; i++) {
 		zinitix_delay(20);
-		ztw522_write_cmd(info->client, ztw522_CLEAR_INT_STATUS_CMD);
+		ret = ztw522_write_cmd(info->client, ztw522_CLEAR_INT_STATUS_CMD);
+		if (ret != I2C_SUCCESS) {
+			dev_err(&info->client->dev,
+				"%s: Failed to clear garbage data[%d/INT_CLEAR_RETRY]\n", __func__, i);
+
+			if (retry_cnt < I2C_RETRY_TIMES) {
+				dev_info(&info->client->dev,
+					"%s: Restore clear retry value.\n", __func__);
+				retry_cnt++;
+				i = 0;
+			}
+		}
 	}
 
+out:
 	info->work_state = NOTHING;
 	enable_irq(info->irq);
 	up(&info->work_lock);
-	return 1;
+
+	return ret;
 }
 
 static int ztw522_upgrade_sequence(struct ztw522_ts_info *info, const u8 *firmware_data)
@@ -2172,6 +2321,7 @@ static int get_tsp_connect_data(struct ztw522_ts_info *info, u8 *threshold)
 	struct zxt_ts_platform_data	*pdata = info->pdata;
 	int i;
 	u32 ret;
+	u32 limitcnt;
 
 	down(&info->work_lock);
 
@@ -2185,10 +2335,21 @@ static int get_tsp_connect_data(struct ztw522_ts_info *info, u8 *threshold)
 	info->work_state = RAW_DATA;
 
 	for (i = 0; i < CONNECT_TEST_RETRY; i++) {
-		while (gpio_get_value(pdata->gpio_int))
+		limitcnt = 0;
+		while (gpio_get_value(pdata->gpio_int)) {
 			zinitix_delay(GPIO_GET_DELAY);
-
-		ztw522_write_cmd(client, ztw522_CLEAR_INT_STATUS_CMD);
+			limitcnt++;
+			if(limitcnt > MAX_LIMIT_CNT) {
+				dev_err(&info->client->dev, "%s: gpio_int wait cnt over. \n", __func__);
+				break;
+			}
+		}
+		ret = ztw522_write_cmd(client, ztw522_CLEAR_INT_STATUS_CMD);
+		if (ret != I2C_SUCCESS) {
+			dev_err(&client->dev, "%s: Failed to write CLEAR_INT_STATUS_CMD\n", __func__);
+			ret = -EIO;
+			goto out;
+		}
 		zinitix_delay(GPIO_GET_DELAY);
 	}
 
@@ -2196,11 +2357,19 @@ static int get_tsp_connect_data(struct ztw522_ts_info *info, u8 *threshold)
 	if (ret < 0) {
 		dev_err(&client->dev, "%s: Failed to read  ztw522_CONNECTED_REG(%d)\n",
 			__func__, ret);
-		ztw522_write_cmd(client, ztw522_CLEAR_INT_STATUS_CMD);
+		ret = ztw522_write_cmd(client, ztw522_CLEAR_INT_STATUS_CMD);
+		if (ret != I2C_SUCCESS)
+			dev_err(&client->dev, "%s: Failed to write CLEAR_INT_STATUS_CMD\n", __func__);
 		goto out;
 	}
 
-	ztw522_write_cmd(client, ztw522_CLEAR_INT_STATUS_CMD);
+	ret = ztw522_write_cmd(client, ztw522_CLEAR_INT_STATUS_CMD);
+	if (ret != I2C_SUCCESS) {
+		dev_err(&client->dev, "%s: Failed to write CLEAR_INT_STATUS_CMD\n", __func__);
+		ret = -EIO;
+		goto out;
+	}
+
 	ret = 0;
 
 out:
@@ -2223,20 +2392,26 @@ static void run_connect_test(void *device_data)
 
 	disable_irq(info->irq);
 
-	ztw522_set_touchmode(info, TOUCH_CND_MODE);
-
-	ret = get_tsp_connect_data(info, (u8 *)&threshold);
+	ret = ztw522_set_touchmode(info, TOUCH_CND_MODE);
 	if (ret) {
-		dev_err(&client->dev, "%s: Failed to read ztw522_CONNECTED_REG\n", __func__);
-		ztw522_set_touchmode(info, TOUCH_POINT_MODE);
+		dev_err(&client->dev, "%s: Failed to set CND_MODE\n", __func__);
 		finfo->cmd_state = FAIL;
 		snprintf(finfo->cmd_buff, sizeof(finfo->cmd_buff), "NG");
 		goto out;
 	}
 
-	ztw522_set_touchmode(info, TOUCH_POINT_MODE);
+	ret = get_tsp_connect_data(info, (u8 *)&threshold);
+	if (ret) {
+		dev_err(&client->dev, "%s: Failed to read ztw522_CONNECTED_REG\n", __func__);
+		finfo->cmd_state = FAIL;
+		snprintf(finfo->cmd_buff, sizeof(finfo->cmd_buff), "NG");
+		goto out;
+	}
 
-	if (threshold >= TSP_CONNECTED_THRETHOLD) {
+	if (threshold == TSP_CONNECTED_INVALID) {
+		finfo->cmd_state = FAIL;
+		snprintf(finfo->cmd_buff, sizeof(finfo->cmd_buff), "NG");
+	} else if (threshold >= TSP_CONNECTED_THRETHOLD) {
 		finfo->cmd_state = OK;
 		snprintf(finfo->cmd_buff, sizeof(finfo->cmd_buff), "OK");
 	} else {
@@ -2251,6 +2426,10 @@ static void run_connect_test(void *device_data)
 out:
 	set_cmd_result(finfo, finfo->cmd_buff,
 			strnlen(finfo->cmd_buff, sizeof(finfo->cmd_buff)));
+	ret = ztw522_set_touchmode(info, TOUCH_POINT_MODE);
+	if (ret)
+		dev_err(&client->dev, "%s: Failed to set POINT_MODE\n", __func__);
+
 	enable_irq(info->irq);
 
 	return;
@@ -2462,8 +2641,33 @@ static void get_fw_ver_ic(void *device_data)
 	struct tsp_factory_info *finfo = info->factory_info;
 	u16 hw_id, model_version, fw_version, vendor_id;
 	u32 version = 0, length;
+	int ret, retry_cnt = 0;
 
 	set_default_result(finfo);
+
+retry:
+	/* LPM Disable  */
+	ret = ztw522_write_reg(client, ZINITIX_INTERNAL_FLAG_01, 0x00);
+	if (ret != I2C_SUCCESS) {
+		dev_err(&client->dev,
+			"%s: Failed to read INTERNAL_FLAG_01. retry:[%d]\n", __func__, retry_cnt);
+		if (retry_cnt < I2C_RETRY_TIMES) {
+			retry_cnt++;
+			goto retry;
+		} else
+			goto out;
+	}
+
+	ret = ztw522_write_reg(client, ZINITIX_INTERNAL_FLAG_02, 0x00);
+	if (ret != I2C_SUCCESS) {
+		dev_err(&client->dev,
+			"%s: Failed to read INTERNAL_FLAG_02. retry:[%d]\n", __func__, retry_cnt);
+		if (retry_cnt < I2C_RETRY_TIMES) {
+			retry_cnt++;
+			goto retry;
+		} else
+			goto out;
+	}
 
 /* Read firmware version from IC */
 	if(ztw522_read_data(client, ztw522_FIRMWARE_VERSION, (u8 *)&hw_id, 2)<0) {
@@ -2754,9 +2958,21 @@ static void run_dnd_read(void *device_data)
 
 	set_default_result(finfo);
 
-	ztw522_set_touchmode(info, TOUCH_DND_MODE);
+	ret = ztw522_set_touchmode(info, TOUCH_DND_MODE);
+	if (ret) {
+		dev_err(&client->dev, "%s: Failed to set DND_MODE\n", __func__);
+		finfo->cmd_state = FAIL;
+		snprintf(finfo->cmd_buff, sizeof(finfo->cmd_buff), "NG");
+		goto out;
+	}
+
 	ret = get_raw_data(info, (u8 *)raw_data->dnd_data, 2);
-	ztw522_set_touchmode(info, TOUCH_POINT_MODE);
+	if (!ret) {
+		dev_err(&client->dev, "%s: Failed to read raw data\n", __func__);
+		finfo->cmd_state = FAIL;
+		snprintf(finfo->cmd_buff, sizeof(finfo->cmd_buff), "NG");
+		goto out;
+	}
 
 	min = 0xFFFF;
 	max = 0x0000;
@@ -2774,16 +2990,16 @@ static void run_dnd_read(void *device_data)
 		pr_cont("\n");
 	}
 
-	if (ret) {
-		finfo->cmd_state = OK;
-		snprintf(finfo->cmd_buff, sizeof(finfo->cmd_buff), "OK");
-	} else {
-		finfo->cmd_state = FAIL;
-		snprintf(finfo->cmd_buff, sizeof(finfo->cmd_buff), "NG");
-	}
+	finfo->cmd_state = OK;
+	snprintf(finfo->cmd_buff, sizeof(finfo->cmd_buff), "OK");
 
+out:
 	set_cmd_result(finfo, finfo->cmd_buff,
 			strnlen(finfo->cmd_buff, sizeof(finfo->cmd_buff)));
+
+	ret = ztw522_set_touchmode(info, TOUCH_POINT_MODE);
+	if (ret)
+		dev_err(&client->dev, "%s: Failed to set POINT_MODE\n", __func__);
 
 	dev_info(&client->dev, "%s: %s(%d)\n", __func__, finfo->cmd_buff,
 				strlen(finfo->cmd_buff));
@@ -3044,12 +3260,25 @@ static void run_hfdnd_read(void *device_data)
 	int x_num = info->cap_info.x_node_num, y_num = info->cap_info.y_node_num;
 	int i, j, offset;
 	u16 min = 0xFFFF, max = 0x0000;
+	int ret;
 
 	set_default_result(finfo);
 
-	ztw522_set_touchmode(info, TOUCH_HFDND_MODE);
-	get_raw_data(info, (u8 *)raw_data->hfdnd_data, 2);
-	ztw522_set_touchmode(info, TOUCH_POINT_MODE);
+	ret = ztw522_set_touchmode(info, TOUCH_HFDND_MODE);
+	if (ret) {
+		dev_err(&client->dev, "%s: Failed to set HFDND_MODE\n", __func__);
+		finfo->cmd_state = FAIL;
+		snprintf(finfo->cmd_buff, sizeof(finfo->cmd_buff), "NG");
+		goto out;
+	}
+
+	ret = get_raw_data(info, (u8 *)raw_data->hfdnd_data, 2);
+	if (!ret) {
+		dev_err(&client->dev, "%s: Failed to read raw data\n", __func__);
+		finfo->cmd_state = FAIL;
+		snprintf(finfo->cmd_buff, sizeof(finfo->cmd_buff), "NG");
+		goto out;
+	}
 
 	dev_info(&client->dev, "%s: HF DND start\n", __func__);
 
@@ -3065,14 +3294,18 @@ static void run_hfdnd_read(void *device_data)
 		}
 		pr_cont("\n");
 	}
-
+	finfo->cmd_state = OK;
+	snprintf(finfo->cmd_buff, sizeof(finfo->cmd_buff), "OK");
+out:
 	set_cmd_result(finfo, finfo->cmd_buff,
 			strnlen(finfo->cmd_buff, sizeof(finfo->cmd_buff)));
-	finfo->cmd_state = OK;
+
+	ret = ztw522_set_touchmode(info, TOUCH_POINT_MODE);
+	if (ret)
+		dev_err(&client->dev, "%s: Failed to set POINT_MODE\n", __func__);
 
 	dev_info(&client->dev, "%s: %s(%d)\n", __func__, finfo->cmd_buff,
 				strnlen(finfo->cmd_buff, sizeof(finfo->cmd_buff)));
-
 	return;
 }
 
@@ -3314,14 +3547,27 @@ static void run_delta_read(void *device_data)
 	struct tsp_factory_info *finfo = info->factory_info;
 	struct tsp_raw_data *raw_data = info->raw_data;
 	s16 min, max;
-	s32 i, j;
+	s32 i, j, ret;
 
 
 	set_default_result(finfo);
 
-	ztw522_set_touchmode(info, TOUCH_DELTA_MODE);
-	get_raw_data(info, (u8 *)raw_data->delta_data, 10);
-	ztw522_set_touchmode(info, TOUCH_POINT_MODE);
+	ret = ztw522_set_touchmode(info, TOUCH_DELTA_MODE);
+	if (ret) {
+		dev_err(&client->dev, "%s: Failed to set DELTA_MODE\n", __func__);
+		finfo->cmd_state = FAIL;
+		snprintf(finfo->cmd_buff, sizeof(finfo->cmd_buff), "NG");
+		goto out;
+	}
+
+	ret = get_raw_data(info, (u8 *)raw_data->delta_data, 10);
+	if (!ret) {
+		dev_err(&client->dev, "%s: Failed to read raw data\n", __func__);
+		finfo->cmd_state = FAIL;
+		snprintf(finfo->cmd_buff, sizeof(finfo->cmd_buff), "NG");
+		goto out;
+	}
+
 
 	min = (s16)0x7FFF;
 	max = (s16)0x8000;
@@ -3346,6 +3592,11 @@ static void run_delta_read(void *device_data)
 				strnlen(finfo->cmd_buff, sizeof(finfo->cmd_buff)));
 		finfo->cmd_state = OK;
 	}
+
+out:
+	ret = ztw522_set_touchmode(info, TOUCH_POINT_MODE);
+	if (ret)
+		dev_err(&client->dev, "%s: Failed to set POINT_MODE\n", __func__);
 
 	dev_info(&client->dev, "%s: %s(%d)\n", __func__, finfo->cmd_buff,
 				strlen(finfo->cmd_buff));
@@ -3460,12 +3711,25 @@ static void run_reference_read(void *device_data)
 	struct tsp_raw_data *raw_data = info->raw_data;
 	int min = 0xFFFF, max = 0x0000;
 	s32 i, j, touchkey_node = 2;
+	int ret;
 
 	set_default_result(finfo);
 
-	ztw522_set_touchmode(info, TOUCH_REFERENCE_MODE);
-	get_raw_data(info, (u8 *)raw_data->reference_data, 2);
-	ztw522_set_touchmode(info, TOUCH_POINT_MODE);
+	ret = ztw522_set_touchmode(info, TOUCH_REFERENCE_MODE);
+	if (ret) {
+		dev_err(&client->dev, "%s: Failed to set REFERENCE_MODE\n", __func__);
+		finfo->cmd_state = FAIL;
+		snprintf(finfo->cmd_buff, sizeof(finfo->cmd_buff), "NG");
+		goto out;
+	}
+
+	ret = get_raw_data(info, (u8 *)raw_data->reference_data, 2);
+	if (!ret) {
+		dev_err(&client->dev, "%s: Failed to read raw data\n", __func__);
+		finfo->cmd_state = FAIL;
+		snprintf(finfo->cmd_buff, sizeof(finfo->cmd_buff), "NG");
+		goto out;
+	}
 
 	for (i = 0; i < info->cap_info.x_node_num; i++) {
 		pr_info("%s: ref_data[%2d] : ", client->name, i);
@@ -3497,6 +3761,11 @@ static void run_reference_read(void *device_data)
 	set_cmd_result(finfo, finfo->cmd_buff,
 				strnlen(finfo->cmd_buff, sizeof(finfo->cmd_buff)));
 	finfo->cmd_state = OK;
+
+out:
+	ret = ztw522_set_touchmode(info, TOUCH_POINT_MODE);
+	if (ret)
+		dev_err(&client->dev, "%s: Failed to set POINT_MODE\n", __func__);
 
 	dev_info(&client->dev, "%s: %s(%d)\n", __func__, finfo->cmd_buff,
 				strlen(finfo->cmd_buff));
@@ -3622,8 +3891,8 @@ static ssize_t ztw522_show_gesture_mode(struct device *dev,
 }
 
 static ssize_t ztw522_store_gesture_mode(struct device *dev,
-				       struct device_attribute *attr,
-				       const char *buf, size_t size)
+					   struct device_attribute *attr,
+					   const char *buf, size_t size)
 {
 	struct ztw522_ts_info *info = dev_get_drvdata(dev);
 	struct i2c_client *client = info->client;
@@ -3655,54 +3924,49 @@ static ssize_t ztw522_store_gesture_mode(struct device *dev,
 	}
 	ztw522_clear_report_data(info);
 
-gesture_retry:
-	ret = ztw522_send_start_event(info);
-	if (ret) {
-		dev_err(&client->dev, "%s: Failed to write ztw522_I2C_START_CMD\n", __func__);
-		ret = -EIO;
-		goto out;
-	}
-
 	if (enable) {
+gesture_retry:
+		ret = ztw522_send_start_event(info);
+		if (ret) {
+			dev_err(&client->dev, "%s: Failed to write ztw522_I2C_START_CMD\n", __func__);
+			ret = -EIO;
+			goto out;
+		}
+
 		ret = ztw522_write_cmd(info->client, ztw522_SLEEP_CMD);
 		if (ret != I2C_SUCCESS) {
 			dev_err(&client->dev, "%s: Failed to write ztw522_SLEEP_CMD\n", __func__);
 			ret = -EIO;
 			goto out;
 		}
+
+		if (0 > ztw522_read_raw_data(info->client, ztw522_GESTURE_STATE, (u8 *)&gesture_state, 2)) {
+			dev_err(&client->dev, "%s: Failed to get ztw522_GESTURE_STATE\n", __func__);
+			ret = -EIO;
+			goto out;
+		}
+
+		if (enable != gesture_state) {
+			dev_err(&client->dev, "%s: Failed to change gesture mode (0x%04x)\n", __func__, gesture_state);
+			if (I2C_RETRY_TIMES > retry) {
+				retry++;
+				ztw522_write_cmd(client, ztw522_I2C_END_CMD);
+				goto gesture_retry;
+			} else {
+				ret = -EIO;
+				goto out;
+			}
+		}
 	} else {
-		ret = ztw522_write_cmd(info->client, ztw522_WAKEUP_CMD);
-		if (ret != I2C_SUCCESS) {
-			dev_err(&client->dev, "%s: Failed to write ztw522_WAKEUP_CMD\n", __func__);
-			ret = -EIO;
-			goto out;
-		}
-	}
-
-	if (0 > ztw522_read_raw_data(info->client, ztw522_GESTURE_STATE, (u8 *)&gesture_state, 2)) {
-		dev_err(&client->dev, "%s: Failed to get ztw522_GESTURE_STATE\n", __func__);
-		ret = -EIO;
-		goto out;
-	}
-
-	if (enable != gesture_state) {
-		dev_err(&client->dev, "%s: Failed to change gesture mode (0x%04x)\n", __func__, gesture_state);
-		if (I2C_RETRY_TIMES > retry) {
-			retry++;
-			ztw522_write_cmd(client, ztw522_I2C_END_CMD);
-			goto gesture_retry;
-		} else {
-			ret = -EIO;
-			goto out;
-		}
+		ztw522_chip_reset(info);
 	}
 
 	dev_info(&client->dev, "%s: gesture mode [%s]\n", __func__, gesture_state ? "on":"off");
 
 	ret = size;
 out:
-	ztw522_write_cmd(client, ztw522_I2C_END_CMD);
-
+	if (enable)
+		ztw522_write_cmd(client, ztw522_I2C_END_CMD);
 
 	return ret;
 }
@@ -4856,7 +5120,7 @@ static int ztw522_probe(struct i2c_client *client, const struct i2c_device_id *i
 
 	if (!ztw522_init_touch(info, false)) {
 		ret = -EPERM;
-		goto err_input_unregister_device;
+		goto err_init_touch;
 	}
 
 #if USE_TSP_TA_CALLBACKS
@@ -4932,7 +5196,7 @@ static int ztw522_probe(struct i2c_client *client, const struct i2c_device_id *i
 	if (IS_ERR(info->led_ldo)) {
 		if (PTR_ERR(info->led_ldo) == -EPROBE_DEFER) {
 			ret = -ENODEV;
-			goto err_alloc;
+			goto err_regulator_get;
 		}
 
 		dev_err(&client->dev, "%s: Target does not use KEY LED\n", __func__);
@@ -5026,18 +5290,22 @@ err_kthread_create_failed:
 #if ZINITIX_MISC_DEBUG
 err_misc_register:
 #endif
-	free_irq(info->irq, info);
 err_request_irq:
+	free_irq(info->irq, info);
 err_gpio_irq:
 	input_unregister_device(info->input_dev);
-err_input_unregister_device:
 err_input_register_device:
 #ifdef CONFIG_SLEEP_MONITOR
 	sleep_monitor_unregister_ops(SLEEP_MONITOR_TSP);
 #endif
+#ifdef SUPPORTED_TOUCH_KEY
+err_regulator_get:
+#endif
+	wake_lock_destroy(&info->wake_lock);
 #if USE_TSP_TA_CALLBACKS
 	ztw522_register_callback(NULL);
 #endif
+err_init_touch:
 	ztw522_power_control(info, POWER_OFF);
 err_power_sequence:
 	if (gpio_is_valid(pdata->gpio_int) != 0)
@@ -5046,7 +5314,6 @@ err_power_sequence:
 		gpio_free(pdata->vdd_en);
 	input_free_device(info->input_dev);
 err_alloc:
-	wake_lock_destroy(&info->wake_lock);
 	devm_kfree(&client->dev, info);
 err_no_platform_data:
 	if (IS_ENABLED(CONFIG_OF))

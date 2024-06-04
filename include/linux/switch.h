@@ -50,7 +50,7 @@ static inline int switch_get_state(struct switch_dev *sdev)
 
 extern void switch_set_state(struct switch_dev *sdev, int state);
 
-#ifdef CONFIG_MACH_VOLT
+#if defined(CONFIG_MACH_VOLT) || defined(CONFIG_MACH_VOLT_NE)
 struct sec_switch_data {
 	void (*init_cb) (void);
 	void (*dock_cb) (u8 type);

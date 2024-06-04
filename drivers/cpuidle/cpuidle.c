@@ -105,6 +105,10 @@ int cpuidle_play_dead(void)
 	return -ENODEV;
 }
 
+#ifdef CONFIG_SLEEP_MONITOR_CPUIDLE
+extern struct cpuidle_device *cpu_idle_dev_mon;
+#endif
+
 /**
  * cpuidle_enter_state - enter the state and update stats
  * @dev: cpuidle device for this cpu
@@ -119,6 +123,10 @@ int cpuidle_enter_state(struct cpuidle_device *dev, struct cpuidle_driver *drv,
 #if defined(CONFIG_SYSTEM_LOAD_ANALYZER)
 	if (dev->cpu == 0)
 		cpu_idle_dev = dev;
+#endif
+#ifdef CONFIG_SLEEP_MONITOR_CPUIDLE
+	if (dev->cpu == 0)
+		cpu_idle_dev_mon = dev;
 #endif
 
 	entered_state = cpuidle_enter_ops(dev, drv, next_state);

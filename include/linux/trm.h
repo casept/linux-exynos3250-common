@@ -13,7 +13,7 @@
 
 #define TOUCH_WAKEUP_BOOSTER	1
 
-#if defined(CONFIG_MACH_VOLT)
+#if defined(CONFIG_MACH_VOLT) || defined(CONFIG_MACH_VOLT_NE)
 #define BACK_KEY_BOOSTER	1
 #endif
 

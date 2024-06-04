@@ -17,6 +17,7 @@
 #define	VENDOR	"STM"
 #define	CHIP_ID_1	"LPS25H"
 #define	CHIP_ID_2	"LPS22H"
+#define	CHIP_ID_3	"LPS33H"
 
 #define CALIBRATION_FILE_PATH		"/csa/sensor/baro_cal_data"
 
@@ -167,14 +168,30 @@ static ssize_t pressure_vendor_show(struct device *dev,
 static ssize_t pressure_name_show(struct device *dev,
 	struct device_attribute *attr, char *buf)
 {
+#if defined(CONFIG_MACH_VOLT)
 	struct ssp_data *data = dev_get_drvdata(dev);
 
 	if (data->ap_rev <= 1)
 		return snprintf(buf, PAGE_SIZE, "%s\n", CHIP_ID_1);
 	else
 		return snprintf(buf, PAGE_SIZE, "%s\n", CHIP_ID_2);
+#elif defined(CONFIG_MACH_VOLT_NE)
+	return snprintf(buf, PAGE_SIZE, "%s\n", CHIP_ID_3);
+#else
+	return snprintf(buf, PAGE_SIZE, "%s\n", CHIP_ID_1);
+#endif
 }
 
+static ssize_t raw_data_read(struct device *dev,
+	struct device_attribute *attr, char *buf)
+{
+	struct ssp_data *data = dev_get_drvdata(dev);
+
+	return snprintf(buf, PAGE_SIZE, "%d\n",
+		data->buf[PRESSURE_SENSOR].pressure[0]);
+}
+
+static DEVICE_ATTR(raw_data, S_IRUGO, raw_data_read, NULL);
 static DEVICE_ATTR(vendor,  S_IRUGO, pressure_vendor_show, NULL);
 static DEVICE_ATTR(name,  S_IRUGO, pressure_name_show, NULL);
 static DEVICE_ATTR(calibration,  S_IRUGO | S_IWUSR | S_IWGRP,
@@ -183,6 +200,7 @@ static DEVICE_ATTR(sea_level_pressure, S_IRUGO | S_IWUSR | S_IWGRP,
 	NULL, sea_level_pressure_store);
 
 static struct device_attribute *pressure_attrs[] = {
+	&dev_attr_raw_data,
 	&dev_attr_vendor,
 	&dev_attr_name,
 	&dev_attr_calibration,
@@ -193,7 +211,7 @@ static struct device_attribute *pressure_attrs[] = {
 void initialize_lps25h_pressure_factorytest(struct ssp_data *data)
 {
 	sensors_register(data->prs_device, data, pressure_attrs,
-		"barometer_sensor");
+		"pressure_sensor");
 }
 
 void remove_lps25h_pressure_factorytest(struct ssp_data *data)

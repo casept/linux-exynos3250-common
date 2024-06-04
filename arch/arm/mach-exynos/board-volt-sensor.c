@@ -20,6 +20,7 @@
 #include "board-universal3250.h"
 
 #include <linux/ssp_platformdata.h>
+#include <linux/sensor/lps22hb_platformdata.h>
 
 #define ss_info(str, args...)\
 	pr_info("[SSP:%s] " str, __func__, ##args)
@@ -61,6 +62,113 @@ static struct ssp_platform_data ssp_pdata = {
 	.mcu_int1 = GPIO_MCU_AP_INT_1,
 	.mcu_int2 = GPIO_MCU_AP_INT_2,
 };
+
+#ifdef CONFIG_MACH_VOLT_NE
+static int lps22hb_pwr;
+static int lps22hb_power_ctl(int onoff)
+{
+	int ret = 0;
+	struct regulator *baro_vdd;
+
+	if (lps22hb_pwr == onoff) {
+		pr_warn("%s, same pwr(%d) state!!", __func__, onoff);
+		return 0;
+	}
+
+	baro_vdd = regulator_get(NULL, "baro_1.8");
+	if (IS_ERR(baro_vdd)) {
+		pr_err("%s, fail to get regulator(baro_1.8)\n", __func__);
+		return PTR_ERR(baro_vdd);
+	}
+
+	if (onoff) {
+		if (regulator_is_enabled(baro_vdd))
+			pr_warn("%s, baro regulator already enabled\n", __func__);
+
+		ret = regulator_enable(baro_vdd);
+		if (ret)
+			pr_err("%s, fail to enable regulator(%d)\n",
+				__func__, ret);
+		else
+			mdelay(10);
+	} else {
+		if (regulator_is_enabled(baro_vdd)) {
+			ret = regulator_disable(baro_vdd);
+			if (ret)
+				pr_err("%s, fail to disable regulator(%d)\n",
+					__func__, ret);
+		} else {
+			ret = regulator_force_disable(baro_vdd);
+			if (ret)
+				pr_err("%s, fail to force_disable regulator(%d)\n",
+					__func__, ret);
+		}
+	}
+	regulator_put(baro_vdd);
+	if (!ret)
+		lps22hb_pwr = onoff;
+
+	pr_info("%s, regulator(baro_1.8) state %d/%d\n",
+			__func__, onoff, ret);
+
+	return ret;
+}
+
+static int lps22hb_power_on(void)
+{
+	int ret;
+
+	ret = lps22hb_power_ctl(1);
+	if (ret)
+		return ret;
+
+	ret = s3c_gpio_cfgall_range(EXYNOS3_GPD1(2), 2,
+			S3C_GPIO_SFN(2), S3C_GPIO_PULL_UP);
+	if (ret)
+		pr_err("%s, Intf gpio cfg failed(%d)\n",
+			__func__, ret);
+	else
+		pr_info("%s, Intf gpio cfs done by GPIO_SFN\n",
+			__func__);
+
+	return ret;
+}
+
+static int lps22hb_power_off(void)
+{
+	int ret;
+
+	ret = s3c_gpio_cfgall_range(EXYNOS3_GPD1(2), 2,
+			S3C_GPIO_INPUT, S3C_GPIO_PULL_DOWN);
+	if (ret) {
+		pr_err("%s, Intf gpio cfg failed(%d)\n",
+			__func__, ret);
+		return ret;
+	} else {
+		pr_info("%s, Intf gpio cfs done by GPIO_INPUT\n",
+			__func__);
+	}
+
+	return lps22hb_power_ctl(0);
+}
+
+static struct lps22_prs_platform_data lps22hb_pdata = {
+	.power_on = lps22hb_power_on,
+	.power_off = lps22hb_power_off,
+
+	.poll_interval = 1000, /* 1Hz */
+	.min_interval = 13, /* 75Hz */
+	.need_pwon_chk = 5,	/* Check & retry cnt for alive or not */
+};
+
+static struct i2c_board_info i2c_devs_baro_sensor[] = {
+	{
+		I2C_BOARD_INFO(LPS22_PRS_DEV_NAME, 0x5D),
+		.platform_data = &lps22hb_pdata,
+	},
+};
+#endif
+
 
 static int initialize_ssp_gpio(void)
 {
@@ -146,6 +254,10 @@ static int ssp_check_lpmode(void)
 */
 static void ssp_get_positions(int *acc, int *mag)
 {
+#ifdef CONFIG_MACH_VOLT_NE
+	*acc = 1;
+	*mag = 6;
+#else
 	switch (system_rev) {
 	case 0:
 	case 1:
@@ -164,6 +276,7 @@ static void ssp_get_positions(int *acc, int *mag)
 		*mag = 3;
 		break;
 	}
+#endif
 	ss_info("position acc : %d, mag = %d\n", *acc, *mag);
 }
 
@@ -239,6 +352,9 @@ static struct spi_board_info spi0_board_info[] __initdata = {
 void __init exynos3_sensor_init(void)
 {
 	int ret = 0;
+#ifdef CONFIG_MACH_VOLT_NE
+	struct s3c2410_platform_i2c *npd;
+#endif
 
 	ss_info("is called\n");
 
@@ -269,5 +385,24 @@ void __init exynos3_sensor_init(void)
 	ret = platform_device_register(&s3c64xx_device_spi0);
 	if (ret < 0)
 		ss_err("Failed to register spi0 plaform devices(err=%d)\n", ret);
+
+#ifdef CONFIG_MACH_VOLT_NE
+	s3c_i2c1_set_platdata(NULL);
+
+	/* By H/W requirement, to prevent unwanted
+	 * GPIO cfg handling in i2c driver. So we
+	 * forcely set them by null again (npd->cfg_gpio).
+	 * 20170630 yongsul96.oh@samsung.com
+	*/
+	npd = s3c_device_i2c1.dev.platform_data;
+	npd->cfg_gpio = NULL;
+
+	i2c_register_board_info(1, i2c_devs_baro_sensor,
+		ARRAY_SIZE(i2c_devs_baro_sensor));
+
+	ret = platform_device_register(&s3c_device_i2c1);
+	if (ret < 0)
+		ss_err("Failed to register i2c1 plaform devices(err=%d)\n", ret);
+#endif
 }
 

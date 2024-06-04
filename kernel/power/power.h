@@ -290,10 +290,4 @@ extern ssize_t pm_show_wakelocks(char *buf, bool show_active);
 extern int pm_wake_lock(const char *buf);
 extern int pm_wake_unlock(const char *buf);
 
-#ifdef CONFIG_PM_SLAVE_WAKELOCKS
-extern ssize_t pm_show_slave_wakelocks(char *buf, bool show_active);
-extern int pm_slave_wake_lock(const char *buf);
-extern int pm_slave_wake_unlock(const char *buf);
-extern int pm_slave_wake_del(const char *buf);
-#endif /* CONFIG_PM_SLAVE_WAKELOCKS */
 #endif /* !CONFIG_PM_WAKELOCKS */

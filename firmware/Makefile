@@ -191,7 +191,11 @@ fw-shipped-$(CONFIG_TOUCHSCREEN_CYTTSP5) += tsp_cypress/cyttsp5_csp31f.fw
 fw-shipped-$(CONFIG_TOUCHSCREEN_CYTTSP5) += tsp_cypress/cyttsp5_bga.fw
 
 #for Zinitix TouchScreen
+ifdef CONFIG_MACH_VOLT_NE
+fw-shipped-$(CONFIG_TOUCHSCREEN_ZINITIX_ZTW522) += tsp_zinitix/zinitix_volt_ne.fw
+else
 fw-shipped-$(CONFIG_TOUCHSCREEN_ZINITIX_ZTW522) += tsp_zinitix/zinitix_ts.fw
+endif
 
 fw-shipped-all := $(fw-shipped-y) $(fw-shipped-m) $(fw-shipped-)
 

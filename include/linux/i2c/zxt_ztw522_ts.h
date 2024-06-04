@@ -130,6 +130,12 @@ enum data_type {
 #define	SEC_HFDND_N_COUNT		11
 #define	SEC_HFDND_U_COUNT		16
 #define	SEC_HFDND_FREQUENCY		104
+
+#define SEC_M_U_COUNT		   3
+#define SEC_M_N_COUNT		   11
+#define SEC_M_FREQUENCY		 84
+#define SEC_M_RST0_TIME		 170
+
 #else /* CONFIG_TOUCHSCREEN_ZT7538_TS */
 #define	CHIP_ON_DELAY			200	/*ms*/
 #define	FIRMWARE_ON_DELAY		150	/*ms*/
@@ -154,6 +160,7 @@ enum data_type {
 #define SEC_DND_V_FORCE		0
 #define SEC_DND_AMP_V_SEL		0x0141
 
+#define MAX_LIMIT_CNT			10000
 #define MAX_RAW_DATA_SZ		36*22
 #define MAX_TRAW_DATA_SZ	\
 	(MAX_RAW_DATA_SZ + 4*MAX_SUPPORTED_FINGER_NUM + 2)
@@ -215,8 +222,8 @@ enum data_type {
 #define ztw522_CALIBRATE_CMD				0x0006
 #define ztw522_SAVE_STATUS_CMD			0x0007
 #define ztw522_SAVE_CALIBRATION_CMD			0x0008
-#define ztw522_I2C_START_CMD            0x000A
-#define ztw522_I2C_END_CMD              0x000B
+#define ztw522_I2C_START_CMD				0x000A
+#define ztw522_I2C_END_CMD	  			0x000B
 #define ztw522_RECALL_FACTORY_CMD			0x000f
 #define ztw522_THRESHOLD				0x0020
 #define ztw522_DEBUG_REG				0x0115 /* 0~7 */
@@ -260,12 +267,18 @@ enum data_type {
 #define ztw522_INIT_FLASH				0x01d0
 #define ztw522_WRITE_FLASH				0x01d1
 #define ztw522_READ_FLASH				0x01d2
+#define ZINITIX_INTERNAL_FLAG_01			0x011d
 #define ZINITIX_INTERNAL_FLAG_02			0x011e
 #define ztw522_OPTIONAL_SETTING			0x0116
 #define ZT75XX_SX_AMP_V_SEL				0x02DF
 #define ZT75XX_SX_SUB_V_SEL				0x02E0
 #define ZT75XX_SY_AMP_V_SEL				0x02EC
 #define ZT75XX_SY_SUB_V_SEL				0x02ED
+
+#define ztw522_M_U_COUNT				0x02F2
+#define ztw522_M_N_COUNT				0x02F3
+#define ztw522_M_RST0_TIME	  			0x02F5
+
 
 #define ZTW522_DEBUG_00				0x0115
 
@@ -334,11 +347,12 @@ enum data_type {
 #define TSP_CMD_Y_NUM		18
 #define TSP_CMD_X_NUM		30
 #define TSP_CMD_NODE_NUM	(TSP_CMD_Y_NUM * TSP_CMD_X_NUM)
+#define TSP_CONNECTED_INVALID		0xffff
 #define TSP_CONNECTED_THRETHOLD	20000
-#define REG_EDGE_XF_OFFSET      0xEC
-#define REG_EDGE_XL_OFFSET      0xED
-#define REG_EDGE_YF_OFFSET      0xEE
-#define REG_EDGE_YL_OFFSET      0xEF
+#define REG_EDGE_XF_OFFSET	  0xEC
+#define REG_EDGE_XL_OFFSET	  0xED
+#define REG_EDGE_YF_OFFSET	  0xEE
+#define REG_EDGE_YL_OFFSET	  0xEF
 
 enum {
 	WAITING = 0,
@@ -469,8 +483,8 @@ struct zxt_ts_platform_data {
 	int		gpio_sda;
 	int		gpio_ldo_en;
 	int		gpio_reset;
-	int             (*tsp_power)(struct i2c_client *client, int on);
-	void             (*gpio_config)(int on);
+	int	 (*tsp_power)(struct i2c_client *client, int on);
+	void	 (*gpio_config)(int on);
 	u32		x_resolution;
 	u32		y_resolution;
 	const char	*fw_name;

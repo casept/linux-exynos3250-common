@@ -48,7 +48,8 @@
 
 #include <linux/usb/gadget.h>
 
-#include <linux/battery/charger/s2mpw01_charger.h>
+extern sec_charging_current_t charging_current_table[];
+extern sec_charging_current_t charging_current_table_retail[];
 
 int current_cable_type;
 extern bool is_jig_attached;
@@ -545,6 +546,8 @@ sec_battery_platform_data_t sec_battery_pdata = {
 		},
 	.cable_adc_value = cable_adc_value_table,
 	.charging_current = charging_current_table,
+	.charging_current_normal = charging_current_table,
+	.charging_current_retail = charging_current_table_retail,
 	.polling_time = polling_time_table,
 	/* NO NEED TO BE CHANGED */
 
@@ -603,20 +606,20 @@ sec_battery_platform_data_t sec_battery_pdata = {
 	.temp_check_type = SEC_BATTERY_TEMP_CHECK_TEMP,
 	.temp_check_count = 1,
 
-	.temp_high_threshold_event = 550,
-	.temp_high_recovery_event = 500,
-	.temp_low_threshold_event = -50,
-	.temp_low_recovery_event = 0,
+	.temp_high_threshold_event = 500,
+	.temp_high_recovery_event = 450,
+	.temp_low_threshold_event = 0,
+	.temp_low_recovery_event = 50,
 
-	.temp_high_threshold_normal = 550,
-	.temp_high_recovery_normal = 500,
-	.temp_low_threshold_normal = -50,
-	.temp_low_recovery_normal = 0,
+	.temp_high_threshold_normal = 500,
+	.temp_high_recovery_normal = 450,
+	.temp_low_threshold_normal = 0,
+	.temp_low_recovery_normal = 50,
 
-	.temp_high_threshold_lpm = 550,
-	.temp_high_recovery_lpm = 500,
-	.temp_low_threshold_lpm = -50,
-	.temp_low_recovery_lpm = 0,
+	.temp_high_threshold_lpm = 500,
+	.temp_high_recovery_lpm = 450,
+	.temp_low_threshold_lpm = 0,
+	.temp_low_recovery_lpm = 50,
 
 	.full_check_type = SEC_BATTERY_FULLCHARGED_CHGPSY,
 	.full_check_type_2nd = SEC_BATTERY_FULLCHARGED_CHGPSY,
@@ -626,7 +629,7 @@ sec_battery_platform_data_t sec_battery_pdata = {
 	.full_condition_type = SEC_BATTERY_FULL_CONDITION_SOC |
 		SEC_BATTERY_FULL_CONDITION_NOTIMEFULL |
 		SEC_BATTERY_FULL_CONDITION_VCELL,
-	.full_condition_soc = 97,
+	.full_condition_soc = 96,
 	.full_condition_vcell = 4300,
 
 	.recharge_check_count = 2,
@@ -634,6 +637,7 @@ sec_battery_platform_data_t sec_battery_pdata = {
 		SEC_BATTERY_RECHARGE_CONDITION_VCELL,
 	.recharge_condition_soc = 90,
 	.recharge_condition_vcell = 4350,
+	.swelling_recharge_condition_vcell = 4250,
 
 	.charging_total_time = 6 * 60 * 60,
 	.recharging_total_time = 90 * 60,
@@ -643,6 +647,20 @@ sec_battery_platform_data_t sec_battery_pdata = {
 	.charger_name = "sec-charger",
 	.chg_float_voltage = 4400,
 	.chg_current_low_swelling = 75,
+
+	/* battery swelling */
+	.swelling_high_temp_block = 410,
+	.swelling_high_temp_recov = 360,
+	.swelling_low_temp_block = 50,
+	.swelling_low_temp_recov = 100,
+	.swelling_low_temp_cur_block = 150,
+	.swelling_low_temp_cur_recov = 200,
+	.swelling_low_chg_current = 75,
+	.swelling_high_chg_current = 75,
+	.swelling_normal_float_voltage = 4400,
+	.swelling_drop_float_voltage = 4200,
+	.swelling_high_rechg_voltage = 4050,
+	.swelling_low_rechg_voltage = 4050,
 
 #if defined(CONFIG_BATTERY_DISCHG_IC)
 	.dischg_test = GPIO_DISCHG_TEST,

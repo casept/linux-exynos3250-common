@@ -11,6 +11,7 @@
 #include <linux/platform_device.h>
 #include <linux/i2c.h>
 #include <linux/regulator/machine.h>
+#include <linux/mfd/core.h>
 #include <linux/mfd/samsung/s2mpw01-core.h>
 #include <linux/mfd/samsung/s2mpw01.h>
 #include <linux/notifier.h>
@@ -28,6 +29,19 @@
 #include <mach/devfreq.h>
 #ifdef CONFIG_EXYNOS_THERMAL
 #include <mach/tmu.h>
+#endif
+
+#ifdef CONFIG_KEYBOARD_S2MPW01
+#include <linux/mfd/samsung/s2mpw01_keys.h>
+#include <linux/input.h>
+#endif
+
+#ifdef CONFIG_FUELGAUGE_S2MPW01
+#include <linux/battery/fuelgauge/s2mpw01_fuelgauge.h>
+#endif
+
+#ifdef CONFIG_CHARGER_S2MPW01
+#include <linux/battery/charger/s2mpw01_charger.h>
 #endif
 
 #define ESPRESSO3250_PMIC_EINT	IRQ_EINT(7)
@@ -535,6 +549,122 @@ static int sec_cfg_irq(void)
 	return 0;
 }
 
+#ifdef CONFIG_KEYBOARD_S2MPW01
+static struct power_keys_button power_button[] = {
+	{
+		.code = KEY_POWER,
+		.wakeup = true,
+		.desc = "KEY_POWER",
+	},
+};
+
+static struct power_keys_platform_data keys_pdata = {
+	.buttons = power_button,
+	.nbuttons = ARRAY_SIZE(power_button),
+	.name = "s2mpw01-power-keys",
+};
+#endif
+
+#ifdef CONFIG_FUELGAUGE_S2MPW01
+#define GPIO_FUEL_nALRT		EXYNOS3_GPX1(5)
+
+static s2mpw01_fuelgauge_platform_data_t fuelgauge_pata = {
+	.fuelgauge_name = "fuelgauge_name",
+	.fg_irq = GPIO_FUEL_nALRT,
+	.fuel_alert_soc = 2,
+	.repeated_fuelalert = false,
+	.capacity_calculation_type =
+		SEC_FUELGAUGE_CAPACITY_TYPE_RAW |
+		SEC_FUELGAUGE_CAPACITY_TYPE_SCALE |
+		SEC_FUELGAUGE_CAPACITY_TYPE_DYNAMIC_SCALE |
+		SEC_FUELGAUGE_CAPACITY_TYPE_SKIP_ABNORMAL,
+	.capacity_max = 1000,
+	.capacity_max_margin = 40,
+	.capacity_min = -8,
+
+	.bat_param_normal = {0x4E, 0xE0, 0x00, 0xE0, 0x10},
+	.bat_param_high = {0x80, 0xA0, 0x92, 0xE0, 0x00},
+	.bat_param_low = {0x00, 0xC0, 0x72, 0xC0, 0x20},
+	.bat_param_very_low = {0x00, 0xC0, 0x72, 0xB0, 0x20},
+};
+#endif
+
+#ifdef CONFIG_CHARGER_S2MPW01
+
+sec_charging_current_t charging_current_table_retail[] = {
+	{75,	75,	100,	100},
+	{0,	0,	0,	0},
+	{75,	75,	100,	100},
+	{75,	75,	100,	100},
+	{75,	75,	100,	100},
+	{75,	75,	100,	100},
+	{75,	75,	100,	100},
+	{75,	75,	100,	100},
+	{75,	75,	100,	100},
+	{0,	0,	0,	0},
+	{75,	75,	100,	100},
+	{75,	75,	100,	100},
+	{0,	0,	0,	0},
+	{0,	0,	0,	0},
+};
+
+sec_charging_current_t charging_current_table[] = {
+	{150,	150,	25,	10},
+	{0,	0,	0,	0},
+	{150,	150,	25,	10},
+	{150,	150,	25,	10},
+	{150,	150,	25,	10},
+	{150,	150,	25,	10},
+	{150,	150,	25,	10},
+	{150,	150,	25,	10},
+	{150,	150,	25,	10},
+	{0,	0,	0,	0},
+	{150,	150,	25,	10},
+	{150,	150,	25,	10},
+	{0,	0,	0,	0},
+	{0,	0,	0,	0},
+};
+
+static s2mpw01_charger_platform_data_t charger_pata = {
+	.charging_current_table = charging_current_table,
+	.charging_current_table_normal = charging_current_table,
+	.charging_current_table_retail = charging_current_table_retail,
+	.chg_float_voltage = 4400,
+	.charger_name = "sec-charger",
+	.full_check_type = SEC_BATTERY_FULLCHARGED_CHGPSY,
+	/* 2nd full check */
+	.full_check_type_2nd = SEC_BATTERY_FULLCHARGED_CHGPSY,
+};
+#endif
+
+static struct mfd_cell s2mpw01_devs[] = {
+#ifdef CONFIG_REGULATOR_S2MPW01
+	{ .name = "s2mpw01-pmic", },
+#endif
+#ifdef CONFIG_RTC_DRV_S2MP
+	{ .name = "s2mp-rtc", },
+#endif
+#ifdef CONFIG_KEYBOARD_S2MPW01
+	{ .name = "s2mpw01-power-keys",
+	   .platform_data = &keys_pdata,
+	   .pdata_size = sizeof(keys_pdata),
+	 },
+#endif
+#ifdef CONFIG_CHARGER_S2MPW01
+	{ .name = "s2mpw01-charger",
+		.platform_data = &charger_pata,
+		.pdata_size = sizeof(charger_pata),
+
+},
+#endif
+#ifdef CONFIG_FUELGAUGE_S2MPW01
+	{ .name = "s2mpw01-fuelgauge",
+	   .platform_data = &fuelgauge_pata,
+	   .pdata_size = sizeof(fuelgauge_pata),
+},
+#endif
+};
+
 static struct sec_pmic_platform_data exynos3_s2m_pdata = {
 	.device_type		= S2MPW01,
 	.irq_base		= IRQ_BOARD_START,
@@ -545,6 +675,9 @@ static struct sec_pmic_platform_data exynos3_s2m_pdata = {
 	.wtsr_smpl		= 1,
 	.opmode_data		= s2mpw01_opmode_data,
 	.buck1234_ramp_delay	= 12,
+	.using_rid_detect = true,
+	.num_mfd_devs	= ARRAY_SIZE(s2mpw01_devs),
+	.mfd_devs = s2mpw01_devs,
 };
 
 struct s3c2410_platform_i2c i2c_data_s2mpw01 __initdata = {
@@ -662,6 +795,8 @@ void __init exynos3_universal3250_power_init(void)
 			&exynos3250_mif_devfreq);
 #endif
 
+	if (system_rev < 0x03)
+		exynos3_s2m_pdata.using_rid_detect = false;
 	i2c_register_board_info(0, i2c_devs0, ARRAY_SIZE(i2c_devs0));
 
 #ifdef CONFIG_EXYNOS_THERMAL

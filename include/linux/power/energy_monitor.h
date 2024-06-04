@@ -41,19 +41,13 @@ enum energy_mon_disp_type {
 	ENERGY_MON_DISP_MAX,
 };
 
-
-
-
 #ifdef CONFIG_ENERGY_MONITOR
-extern int energy_monitor_marker(int type, int state);
+extern int energy_monitor_marker(int type);
 extern int energy_monitor_record_disp_time(int type);
 extern int energy_monitor_record_wakeup_reason(int irq);
-
 #else
-static inline int energy_monitor_marker(int type, int state) {}
+static inline int energy_monitor_marker(int type) {}
 static inline int energy_monitor_record_disp_time(int type) {}
 static inline int energy_monitor_record_wakeup_reason(int irq) {}
-#endif
-
-
-#endif
+#endif /* CONFIG_ENERGY_MONITOR */
+#endif /* _ENERGY_MONITOR_H */

@@ -89,6 +89,7 @@ static void initialize_variable(struct ssp_data *data)
 #endif
 
 	data->bSspShutdown = true;
+	data->bSspReady = false;
 	data->bGeomagneticRawEnabled = false;
 	data->bBarcodeEnabled = false;
 	data->bAccelAlert = false;

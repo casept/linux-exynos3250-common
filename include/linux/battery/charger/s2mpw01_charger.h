@@ -104,6 +104,14 @@
 #define FAST_CHARGING_CURRENT_MASK	MASK(FAST_CHARGING_CURRENT_WIDTH,\
 					FAST_CHARGING_CURRENT_SHIFT)
 
+/* S2MPW01_CHG_CTRL3 */
+#define EN_RECHARGE_VOLTAGE_SHIFT	3
+#define EN_RECHARGE_VOLTAGE_MASK		BIT(EN_RECHARGE_VOLTAGE_SHIFT)
+#define RECHARGE_VOLTAGE_SHIFT		0
+#define RECHARGE_VOLTAGE_WIDTH		3
+#define RECHARGE_VOLTAGE_MASK		MASK(RECHARGE_VOLTAGE_WIDTH,\
+					RECHARGE_VOLTAGE_SHIFT)
+
 /* S2MPW01_CHG_CTRL4 */
 #define FIRST_TOPOFF_CURRENT_SHIFT	4
 #define FIRST_TOPOFF_CURRENT_WIDTH	4
@@ -141,52 +149,17 @@ struct charger_info {
 
 typedef struct s2mpw01_charger_platform_data {
 	sec_charging_current_t *charging_current_table;
+	sec_charging_current_t *charging_current_table_normal;
+	sec_charging_current_t *charging_current_table_retail;
 	int chg_float_voltage;
+	int chg_recharge_voltage;
 	char *charger_name;
 	bool chg_eoc_dualpath;
+	bool topoff_timer_enable;
 	uint32_t is_1MHz_switching:1;
+	sec_battery_full_charged_t full_check_type;
 	/* 2nd full check */
-	 sec_battery_full_charged_t full_check_type_2nd;
+	sec_battery_full_charged_t full_check_type_2nd;
 } s2mpw01_charger_platform_data_t;
-
-#if defined(S2MPW01_CORE_C)
-#if defined(CONFIG_RETAIL_DEMO)
-sec_charging_current_t charging_current_table[] = {
-	{75,	75,	20,	10},
-	{0,	0,	0,	0},
-	{75,	75,	20,	10},
-	{75,	75,	20,	10},
-	{75,	75,	20,	10},
-	{75,	75,	20,	10},
-	{75,	75,	20,	10},
-	{75,	75,	20,	10},
-	{75,	75,	20,	10},
-	{0,	0,	0,	0},
-	{75,	75,	20,	10},
-	{75,	75,	20,	10},
-	{0,	0,	0,	0},
-	{0,	0,	0,	0},
-};
-#else
-sec_charging_current_t charging_current_table[] = {
-	{150,	150,	20,	10},
-	{0,	0,	0,	0},
-	{150,	150,	20,	10},
-	{150,	150,	20,	10},
-	{150,	150,	20,	10},
-	{150,	150,	20,	10},
-	{150,	150,	20,	10},
-	{150,	150,	20,	10},
-	{150,	150,	20,	10},
-	{0,	0,	0,	0},
-	{150,	150,	20,	10},
-	{150,	150,	20,	10},
-	{0,	0,	0,	0},
-	{0,	0,	0,	0},
-};
-#endif
-#else
-extern sec_charging_current_t charging_current_table[];
-#endif
 
 #endif /*S2MPW01_CHARGER_H*/

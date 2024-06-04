@@ -215,10 +215,10 @@ static int pid_stat_read_proc(char *page, char **start, off_t off,
 	char *p = page;
 	struct pid_stat *entry;
 
-	p += sprintf(p, "name\t\tcount\t\t"
-		"snd_count\tsnd_bytes\trcv_count\trcv_bytes\t"
-		"activity_count\tttotal_transmit\ttotal_snd_count\ttotal_snd_bytes\t"
-		"total_rcv_count\ttotal_rcv_bytes\tlast_transmit\tsuspend_count\n");
+	p += sprintf(p, "name            count snd_count snd_bytes "
+			"rcv_count rcv_bytes activity_count total_transmit "
+			"total_snd_count total_snd_bytes total_rcv_count total_rcv_bytes "
+			"last_transmit suspend_count\n");
 	spin_lock_irqsave(&pid_lock, flags);
 	list_for_each_entry(entry, &pid_list, link) {
 		snd_bytes = (unsigned int) (atomic_read(&entry->snd_post_suspend) + INT_MIN);
@@ -235,7 +235,9 @@ static int pid_stat_read_proc(char *page, char **start, off_t off,
 		total_rcv_count = (unsigned int) (atomic_read(&entry->rcv_count) + INT_MIN);
 		total_transmit_count = total_snd_count + total_rcv_count;
 
-		p += sprintf(p, "%-16s%u\t\t%u\t\t%u\t\t%u\t\t%u\t\t%u\t\t%u\t\t%u\t\t%u\t\t%u\t\t%u\t\t%lld\t\t%d\n",
+		p += sprintf(p,
+					"%-15s %5u %9u %9u %9u %9u %14u %14u "
+					"%15u %15u %15u %15u %13lld %13d\n",
 					entry->comm, transmit_count,
 					snd_count, snd_bytes,
 					rcv_count, rcv_bytes,

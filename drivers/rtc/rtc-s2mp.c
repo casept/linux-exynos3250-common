@@ -467,7 +467,8 @@ static void s2m_rtc_enable_wtsr(struct s2m_rtc_info *info, bool enable)
 }
 
 #if !defined(CONFIG_MACH_B2) && !defined(CONFIG_MACH_WINGTIP) \
-	&& !defined(CONFIG_MACH_WC1) && !defined(CONFIG_MACH_VOLT)
+	&& !defined(CONFIG_MACH_WC1) && !defined(CONFIG_MACH_VOLT) \
+	&& !defined(CONFIG_MACH_VOLT_NE)
 static void s2m_rtc_enable_smpl(struct s2m_rtc_info *info, bool enable)
 {
 	int ret;
@@ -505,6 +506,7 @@ static int s2m_rtc_init_reg(struct s2m_rtc_info *info)
 	unsigned int data, tp_read, tp_read1;
 	int ret;
 	struct rtc_time tm;
+	unsigned long init_secs;
 
 	ret = sec_rtc_read(info->iodev, S2M_RTC_CTRL, &tp_read);
 	if (ret < 0) {
@@ -518,25 +520,17 @@ static int s2m_rtc_init_reg(struct s2m_rtc_info *info)
 	data &= ~(1 << BCD_EN_SHIFT);
 
 	info->rtc_24hr_mode = 1;
-	/* In first boot time, Set rtc time to 1/1/2012 00:00:00(SUN) */
 	ret = sec_rtc_read(info->iodev, S2M_CAP_SEL, &tp_read1);
 	if (ret < 0) {
 		dev_err(info->dev, "%s: fail to read cap sel reg(%d)\n",
 				__func__, ret);
 		return ret;
 	}
-	/* In first boot time, Set rtc time to 1/1/2015 00:00:00(THU) */
+	/* In first boot time, Set initial time */
 	if ((tp_read & MODEL24_MASK) == 0 || ((tp_read1 & 0xf0) != 0xf0)) {
 		dev_info(info->dev, "rtc init\n");
-		tm.tm_sec = 0;
-		tm.tm_min = 0;
-		tm.tm_hour = 0;
-		tm.tm_wday = 4;
-		tm.tm_mday = 1;
-		tm.tm_mon = 0;
-		tm.tm_year = 115;
-		tm.tm_yday = 0;
-		tm.tm_isdst = 0;
+		init_secs = mktime(CONFIG_RTC_START_YEAR, 1, 1, 0, 0, 0);
+		rtc_time_to_tm(init_secs, &tm);
 		ret = s2m_rtc_set_time(info->dev, &tm);
 		time_history_rtc_time_set(&tm, ret);
 	}
@@ -801,7 +795,8 @@ static int __devinit s2m_rtc_probe(struct platform_device *pdev)
 		s2m_rtc_enable_wtsr(s2m, true);
 /* Don't control smpl for B2 & Orbis model */
 #if !defined(CONFIG_MACH_B2) && !defined(CONFIG_MACH_WINGTIP) \
-	&& !defined(CONFIG_MACH_WC1) && !defined(CONFIG_MACH_VOLT)
+	&& !defined(CONFIG_MACH_WC1) && !defined(CONFIG_MACH_VOLT) \
+	&& !defined(CONFIG_MACH_VOLT_NE)
 		s2m_rtc_enable_smpl(s2m, true);
 #endif
 	}
@@ -899,7 +894,8 @@ static void s2m_rtc_shutdown(struct platform_device *pdev)
 
 /* Don't control smpl for B2 & Orbis model */
 #if !defined(CONFIG_MACH_B2) && !defined(CONFIG_MACH_WINGTIP) \
-	&& !defined(CONFIG_MACH_WC1) && !defined(CONFIG_MACH_VOLT)
+	&& !defined(CONFIG_MACH_WC1) && !defined(CONFIG_MACH_VOLT) \
+	&& !defined(CONFIG_MACH_VOLT_NE)
 	/* Disable SMPL when power off */
 	s2m_rtc_enable_smpl(info, false);
 #endif

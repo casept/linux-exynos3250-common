@@ -197,8 +197,6 @@ void exynos_drm_gem_destroy(struct exynos_drm_gem_obj *exynos_gem_obj)
 		(int)obj, (int)exynos_gem_obj->buffer->dma_addr,
 		atomic_read(&obj->handle_count));
 
-	msleep(20);
-
 	/*
 	 * do not release memory region from exporter.
 	 *

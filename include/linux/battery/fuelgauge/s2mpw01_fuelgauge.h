@@ -36,8 +36,10 @@
 #define S2MPW01_FG_REG_ROCV  0x06
 #define S2MPW01_FG_REG_RSOC  0x08
 #define S2MPW01_FG_REG_RTEMP  0x0A
+#define S2MPW01_FG_REG_RZADJ_CHG2  0x0B
 #define S2MPW01_FG_REG_RBATCAP  0x0C
 #define S2MPW01_FG_REG_RZADJ  0x0E
+#define S2MPW01_FG_REG_RZADJ_CHG  0x0F
 #define S2MPW01_FG_REG_RBATZ0  0x10
 #define S2MPW01_FG_REG_RBATZ1  0x12
 #define S2MPW01_FG_REG_IRQ_LVL  0x14
@@ -81,6 +83,11 @@ typedef struct s2mpw01_fuelgauge_platform_data {
 	bool repeated_fuelalert;
 
 	struct sec_charging_current *charging_current;
+
+	u8 bat_param_normal[5];
+	u8 bat_param_high[5];
+	u8 bat_param_low[5];
+	u8 bat_param_very_low[5];
 } s2mpw01_fuelgauge_platform_data_t;
 
 

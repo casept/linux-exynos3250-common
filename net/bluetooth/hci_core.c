@@ -3021,12 +3021,20 @@ struct hci_dev *hci_alloc_dev(void)
 	hdev->le_scan_type = LE_SCAN_PASSIVE;
 	hdev->le_scan_interval = 0x0060;
 	hdev->le_scan_window = 0x0030;
+#ifdef CONFIG_TIZEN_WIP
+	/* Default connection interval is used for service discovery.
+	 * Old one is too slow to discover all iOS GATT services.
+	 * Once GATT service discovery procedure is done,
+	 * service daemons will control it as per their needs.
+	 */
+	hdev->le_conn_min_interval = 0x0014;	/* 25 ms */
+	hdev->le_conn_max_interval = 0x001c;	/* 35 ms */
+	hdev->le_conn_latency = 0x0000;
+	hdev->le_supv_timeout = 0x0258;		/* 6000 msec */
+#else
 	hdev->le_conn_min_interval = 0x0028;
 	hdev->le_conn_max_interval = 0x0038;
 	hdev->le_conn_latency = 0x0000;
-#ifdef CONFIG_TIZEN_WIP
-	hdev->le_supv_timeout = 0x0258;		/* 6000 msec */
-#else
 	hdev->le_supv_timeout = 0x002a;		/* 420 msec */
 #endif
 	hdev->le_def_tx_len = 0x001b;
@@ -3931,8 +3939,15 @@ static struct hci_chan *hci_chan_sent(struct hci_dev *hdev, __u8 type,
 
 	switch (chan->conn->type) {
 	case ACL_LINK:
+#ifdef CONFIG_TIZEN_WIP
+		cnt = hdev->acl_cnt - hdev->streaming_cnt;
+		if (cnt <= 0)
+			return NULL;
+		break;
+#else
 		cnt = hdev->acl_cnt;
 		break;
+#endif
 	case AMP_LINK:
 		cnt = hdev->block_cnt;
 		break;
@@ -4021,6 +4036,70 @@ static void __check_timeout(struct hci_dev *hdev, unsigned int cnt)
 	}
 }
 
+#ifdef CONFIG_TIZEN_WIP
+static void hci_sched_streaming_conn(struct hci_dev *hdev)
+{
+	struct hci_conn *conn = hdev->streaming_conn;
+
+	if (conn->state != BT_CONNECTED && conn->state != BT_CONFIG)
+		return;
+
+	while (hdev->streaming_cnt && hdev->acl_cnt) {
+		struct hci_chan *tmp;
+		struct sk_buff *skb;
+		struct hci_chan *chan = NULL;
+		unsigned int priority = 0;
+
+		rcu_read_lock();
+
+		list_for_each_entry_rcu(tmp, &conn->chan_list, list) {
+			if (skb_queue_empty(&tmp->data_q))
+				continue;
+
+			skb = skb_peek(&tmp->data_q);
+			if (skb->priority < priority)
+				continue;
+
+			if (skb->priority > priority) {
+				chan = tmp;
+				priority = skb->priority;
+			} else if (chan == NULL) {
+				chan = tmp;
+				priority = skb->priority;
+			}
+		}
+
+		rcu_read_unlock();
+
+		if (!chan)
+			break;
+
+		while (hdev->streaming_cnt && hdev->acl_cnt &&
+		       (skb = skb_peek(&chan->data_q))) {
+
+			/* Stop if priority has changed */
+			if (skb->priority < priority)
+				break;
+
+			skb = skb_dequeue(&chan->data_q);
+
+			hci_conn_enter_active_mode(chan->conn,
+						   bt_cb(skb)->force_active);
+
+			hci_send_frame(hdev, skb);
+			hdev->acl_last_tx = jiffies;
+
+			hdev->acl_cnt--;
+			hdev->streaming_cnt--;
+			chan->sent++;
+
+			conn->streaming_sent++;
+			conn->sent++;
+		}
+	}
+}
+#endif
+
 static void hci_sched_acl_pkt(struct hci_dev *hdev)
 {
 	unsigned int cnt = hdev->acl_cnt;
@@ -4030,8 +4109,13 @@ static void hci_sched_acl_pkt(struct hci_dev *hdev)
 
 	__check_timeout(hdev, cnt);
 
+#ifdef CONFIG_TIZEN_WIP
+	while (hdev->acl_cnt > hdev->streaming_cnt &&
+	       (chan = hci_chan_sent(hdev, ACL_LINK, &quote))) {
+#else
 	while (hdev->acl_cnt &&
 	       (chan = hci_chan_sent(hdev, ACL_LINK, &quote))) {
+#endif
 		u32 priority = (skb_peek(&chan->data_q))->priority;
 		while (quote-- && (skb = skb_peek(&chan->data_q))) {
 			BT_DBG("chan %p skb %p len %d priority %u", chan, skb,
@@ -4051,9 +4135,15 @@ static void hci_sched_acl_pkt(struct hci_dev *hdev)
 
 			hdev->acl_cnt--;
 			chan->sent++;
+
 			chan->conn->sent++;
 		}
 	}
+
+#ifdef CONFIG_TIZEN_WIP
+	if (hdev->streaming_conn)
+		hci_sched_streaming_conn(hdev);
+#endif
 
 	if (cnt != hdev->acl_cnt)
 		hci_prio_recalculate(hdev, ACL_LINK);

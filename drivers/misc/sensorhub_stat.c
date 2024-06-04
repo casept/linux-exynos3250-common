@@ -62,6 +62,8 @@ struct sensorhub_stat {
 	struct list_head link;
 	struct timespec init_time;
 	int lib_number;
+	unsigned long long last_gps_user;
+	unsigned char last_gps_ext;
 	atomic_t wakeup_cnt;
 	atomic_t ap_wakeup_cnt;
 	atomic_t success_cnt_post_suspend;
@@ -157,7 +159,7 @@ static struct sensorhub_stat *create_stat(int lib_number)
 	struct sensorhub_stat *new_sensorhub_lib;
 
 	/* Create the sensorhub stat struct and append it to the list. */
-	if ((new_sensorhub_lib = kmalloc(sizeof(struct sensorhub_stat), GFP_KERNEL)) == NULL)
+	if ((new_sensorhub_lib = kmalloc(sizeof(struct sensorhub_stat), GFP_ATOMIC)) == NULL)
 		return NULL;
 
 	new_sensorhub_lib->lib_number = lib_number;
@@ -174,6 +176,10 @@ static struct sensorhub_stat *create_stat(int lib_number)
 	atomic_set(&new_sensorhub_lib->fail_cnt, INT_MIN);
 	atomic_set(&new_sensorhub_lib->fail_dur, INT_MIN);
 	new_sensorhub_lib->suspend_count = 0;
+
+	/* Init gps info */
+	new_sensorhub_lib->last_gps_user = 0;
+	new_sensorhub_lib->last_gps_ext = 0;
 
 	/* snapshot the current system time for calculating consumed enrergy */
 	getnstimeofday(&new_sensorhub_lib->init_time);
@@ -226,7 +232,9 @@ int sensorhub_stat_rcv(const char *dataframe, int size)
 	struct sensorhub_stat *entry;
 	unsigned long flags;
 	struct sensorhub_stat *temp_entry;
+	unsigned long long last_gps_user = 0;
 	unsigned int wakeup, ap_wakeup;
+	int i;
 
 	if ((entry = find_sensorhub_stat(lib_number)) == NULL &&
 		((entry = create_stat(lib_number)) == NULL)) {
@@ -238,11 +246,25 @@ int sensorhub_stat_rcv(const char *dataframe, int size)
 		u32 running_time;
 		hub_data = &dataframe[3];
 
+		/* Get gps running time */
 		entry->ts = ktime_get();
 		running_time =  bytes_to_uint_little(hub_data, &cursor, GPS_BATCH_RUNNING_TIME_SIZE);
 		atomic_set(&entry->success_dur, (int)running_time + INT_MIN);
-		pr_info(SENSORHUB_STAT_PREFIX"%s %d %u\n",
-			__func__, lib_number, running_time);
+
+		if (size > DATAFRAME_GPS_EXT) {
+			/* Get last gps user */
+			for (i = DATAFRAME_GPS_LAST_USER_END; i >= DATAFRAME_GPS_LAST_USER_START; i--) {
+				last_gps_user = last_gps_user << 8;
+				last_gps_user |= dataframe[i];
+			}
+			entry->last_gps_user = last_gps_user;
+
+			/* Get last gps ext */
+			entry->last_gps_ext = dataframe[DATAFRAME_GPS_EXT];
+		}
+
+		pr_info(SENSORHUB_STAT_PREFIX"%s lib#(%d) running_time(%us) dataframe_size(%d)\n",
+				__func__, lib_number, running_time, size);
 	}
 	if (lib_number == SHUB_LIB_DATA_RESTING_HR) {
 		int i;
@@ -329,7 +351,7 @@ int sensorhub_stat_get_wakeup(struct sensorhub_wakeup_stat *sh_wakeup)
 	return 0;
 }
 
-int sensorhub_stat_get_gps_time(struct sensorhub_gps_stat *sh_gps)
+int sensorhub_stat_get_gps_info(struct sensorhub_gps_stat *sh_gps)
 {
 	unsigned long flags;
 	struct sensorhub_stat *entry;
@@ -341,6 +363,8 @@ int sensorhub_stat_get_gps_time(struct sensorhub_gps_stat *sh_gps)
 	list_for_each_entry(entry, &sensorhub_list, link) {
 		if (entry->lib_number == SHUB_LIB_DATA_GPS_BATCH) {
 			sh_gps->gps_time = (atomic_read(&entry->success_dur) + INT_MIN);
+			sh_gps->last_gps_user = entry->last_gps_user;
+			sh_gps->last_gps_ext = entry->last_gps_ext;
 			pr_debug(SENSORHUB_STAT_PREFIX"%s %d %d\n",
 				__func__, entry->lib_number, sh_gps->gps_time);
 			break;
@@ -351,11 +375,11 @@ int sensorhub_stat_get_gps_time(struct sensorhub_gps_stat *sh_gps)
 	return 0;
 }
 
-static int sensorhub_stat_stat_read_proc(char *page, char **start, off_t off,
-				int count, int *eof, void *data)
+static ssize_t sensorhub_stat_stat_read_proc(struct file *file,
+	char __user *buffer, size_t count, loff_t *ppos)
 {
-	int len;
-	char *p = page;
+	ssize_t ret = 0;
+	char *buf;
 	unsigned long flags;
 	unsigned int wakeup, ap_wakeup;
 	unsigned int cnt, succes_cnt, fail_cnt;
@@ -365,9 +389,21 @@ static int sensorhub_stat_stat_read_proc(char *page, char **start, off_t off,
 	struct timespec current_time, delta;
 	struct sensorhub_stat *entry;
 
-	p += sprintf(p, "lib#\twakeup\tcnt\tdur\tsucces_cnt\tsuccess_dur\tfail_cnt\tfail_dur\t"
-		"total_cnt\ttotal_dur\ttotal_succes_cnt\ttotal_success_dur\ttotal_fail_cnt\ttotal_fail_dur\t"
-		"suspend_count\telaped_time\n");
+	if (*ppos < 0 || !count)
+		return -EINVAL;
+
+	buf = kzalloc(4096, GFP_KERNEL);
+	if (!buf) {
+		pr_err(SENSORHUB_STAT_PREFIX"%s can not allocate buffer\n", __func__);
+		return -ENOMEM;
+	}
+
+	if (*ppos == 0) {
+		ret += snprintf(buf+ret, 4096,
+				"lib#  wakeup  ap_wakeup  cnt  dur  success_cnt  success_dur  fail_cnt  "
+			"fail_dur  total_cnt  total_dur  total_success_cnt  total_success_dur  "
+			"total_fail_cnt  total_fail_dur  suspend_count  elaped_time\n");
+
 	spin_lock_irqsave(&sensorhub_lock, flags);
 	list_for_each_entry(entry, &sensorhub_list, link) {
 		wakeup =  (unsigned int) (atomic_read(&entry->wakeup_cnt) + INT_MIN);
@@ -389,20 +425,32 @@ static int sensorhub_stat_stat_read_proc(char *page, char **start, off_t off,
 		getnstimeofday(&current_time);
 		delta = timespec_sub(current_time, entry->init_time);
 
-		p += sprintf(p, "%d\t%u(%u)\t%u\t%u\t%u\t%u\t%u\t%u\t%u\t%u\t%u\t%u\t%u\t%u\t%d\t%ld\n",
-					entry->lib_number, wakeup, ap_wakeup,
-					cnt, dur, succes_cnt, success_dur, fail_cnt, fail_dur,
-					total_cnt, total_dur, total_succes_cnt, total_success_dur, total_fail_cnt, total_fail_dur,
-					entry->suspend_count, delta.tv_sec);
+			ret += snprintf(buf+ret, 4096 - ret,
+					"%4d  %6u  %9u  %3u  %3u  %11u  %11u  %8u  %8u  %9u  "
+				"%9u  %17u  %17u  %14u  %14u  %13d  %11ld\n",
+				entry->lib_number, wakeup, ap_wakeup,
+				cnt, dur, succes_cnt, success_dur, fail_cnt, fail_dur,
+				total_cnt, total_dur, total_succes_cnt, total_success_dur,
+				total_fail_cnt, total_fail_dur,	entry->suspend_count, delta.tv_sec);
 	}
 	spin_unlock_irqrestore(&sensorhub_lock, flags);
+	}
 
-	len = (p - page) - off;
-	*eof = (len <= count) ? 1 : 0;
-	*start = page + off;
+	if (ret >= 0) {
+		if (copy_to_user(buffer, buf, ret)) {
+			kfree(buf);
+			return -EFAULT;
+		}
+		*ppos += ret;
+	}
+	kfree(buf);
 
-	return len;
+	return ret;
 }
+
+static const struct file_operations sensorhub_stat_fops = {
+	.read		= sensorhub_stat_stat_read_proc,
+};
 
 #ifndef CONFIG_SLEEP_MONITOR
 static int sensorhub_stat_pm_notifier(struct notifier_block *nb,
@@ -479,8 +527,7 @@ static int __init sensorhub_stat_init(void)
 		goto fail_sensorhub_stat;
 	}
 
-	pe = create_proc_read_entry("stat", S_IRUGO, parent,
-			sensorhub_stat_stat_read_proc, NULL);
+	pe = proc_create("stat", S_IRUGO, parent,  &sensorhub_stat_fops);
 	if (!pe)
 		goto fail_sensorhub_stat_stat;
 
