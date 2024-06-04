@@ -42,6 +42,7 @@
 #define MGMT_STATUS_NOT_POWERED		0x0f
 #define MGMT_STATUS_CANCELLED		0x10
 #define MGMT_STATUS_INVALID_INDEX	0x11
+#define MGMT_STATUS_RFKILLED		0x12
 
 struct mgmt_hdr {
 	__le16	opcode;
@@ -92,6 +93,7 @@ struct mgmt_rp_read_index_list {
 #define MGMT_SETTING_BREDR		0x00000080
 #define MGMT_SETTING_HS			0x00000100
 #define MGMT_SETTING_LE			0x00000200
+#define MGMT_SETTING_ADVERTISING	0x00000400
 
 #define MGMT_OP_READ_INFO		0x0004
 #define MGMT_READ_INFO_SIZE		0
@@ -341,6 +343,92 @@ struct mgmt_cp_unblock_device {
 } __packed;
 #define MGMT_UNBLOCK_DEVICE_SIZE	MGMT_ADDR_INFO_SIZE
 
+#define MGMT_OP_SET_DEVICE_ID		0x0028
+struct mgmt_cp_set_device_id {
+	__le16	source;
+	__le16	vendor;
+	__le16	product;
+	__le16	version;
+} __packed;
+#define MGMT_SET_DEVICE_ID_SIZE		8
+
+#define MGMT_OP_SET_ADVERTISING		0x0029
+
+#define MGMT_OP_SET_BREDR		0x002A
+
+#define MGMT_OP_SET_STATIC_ADDRESS	0x002B
+struct mgmt_cp_set_static_address {
+	bdaddr_t bdaddr;
+} __packed;
+#define MGMT_SET_STATIC_ADDRESS_SIZE	6
+
+#define MGMT_OP_SET_SCAN_PARAMS		0x002C
+struct mgmt_cp_set_scan_params {
+	__le16	interval;
+	__le16	window;
+} __packed;
+#define MGMT_SET_SCAN_PARAMS_SIZE	4
+
+#ifdef CONFIG_TIZEN_WIP
+#define MGMT_OP_SET_ADVERTISING_PARAMS	0x002D
+struct mgmt_cp_set_advertising_params {
+	__le16  interval_min;
+	__le16  interval_max;
+	__u8 filter_policy;
+} __packed;
+#define MGMT_SET_ADVERTISING_PARAMS_SIZE 5
+
+#define MGMT_OP_SET_ADVERTISING_DATA	0x002E
+struct mgmt_cp_set_advertising_data {
+	__u8    data[HCI_MAX_AD_LENGTH - 3];
+} __packed;
+#define MGMT_SET_ADVERTISING_DATA_SIZE	(HCI_MAX_AD_LENGTH - 3)
+
+#define MGMT_OP_SET_SCAN_RSP_DATA	0x002F
+struct mgmt_cp_set_scan_rsp_data {
+	__u8    data[HCI_MAX_AD_LENGTH];
+} __packed;
+#define MGMT_SET_SCAN_RSP_DATA_SIZE	HCI_MAX_AD_LENGTH
+
+#define MGMT_OP_ADD_DEV_WHITE_LIST		0x0030
+struct mgmt_cp_add_dev_white_list {
+	__u8	bdaddr_type;
+	bdaddr_t bdaddr;
+} __packed;
+#define MGMT_ADD_DEV_WHITE_LIST_SIZE	7
+
+#define MGMT_OP_REMOVE_DEV_FROM_WHITE_LIST		0x0031
+struct mgmt_cp_remove_dev_from_white_list {
+	__u8	bdaddr_type;
+	bdaddr_t bdaddr;
+} __packed;
+#define MGMT_REMOVE_DEV_FROM_WHITE_LIST_SIZE	7
+
+#define MGMT_OP_CLEAR_DEV_WHITE_LIST		0x0032
+#define MGMT_OP_CLEAR_DEV_WHITE_LIST_SIZE		0
+
+#ifdef CONFIG_TIZEN_RANDOM
+struct mgmt_irk_info {
+	struct mgmt_addr_info addr;
+	uint8_t	master;
+	uint8_t	val[16];
+} __packed;
+
+#define MGMT_OP_RESOLVE_RPA		0x0033
+#define MGMT_RESOLVE_RPA_SIZE		6
+struct mgmt_cp_resolve_rpa {
+	bdaddr_t bdaddr;
+} __packed;
+
+#define MGMT_OP_LOAD_REMOTE_IRKS		0x0034
+struct mgmt_cp_load_remote_irks {
+	__le16	key_count;
+	struct mgmt_irk_info keys[0];
+} __packed;
+#define MGMT_LOAD_REMOTE_IRKS_SIZE	2
+#endif /* CONFIG_TIZEN_RANDOM */
+#endif
+
 #define MGMT_EV_CMD_COMPLETE		0x0001
 struct mgmt_ev_cmd_complete {
 	__le16	opcode;
@@ -396,7 +484,16 @@ struct mgmt_ev_device_connected {
 	__u8	eir[0];
 } __packed;
 
+#define MGMT_DEV_DISCONN_UNKNOWN	0x00
+#define MGMT_DEV_DISCONN_TIMEOUT	0x01
+#define MGMT_DEV_DISCONN_LOCAL_HOST	0x02
+#define MGMT_DEV_DISCONN_REMOTE		0x03
+
 #define MGMT_EV_DEVICE_DISCONNECTED	0x000C
+struct mgmt_ev_device_disconnected {
+	struct mgmt_addr_info addr;
+	__u8	reason;
+} __packed;
 
 #define MGMT_EV_CONNECT_FAILED		0x000D
 struct mgmt_ev_connect_failed {
@@ -435,7 +532,7 @@ struct mgmt_ev_auth_failed {
 struct mgmt_ev_device_found {
 	struct mgmt_addr_info addr;
 	__s8	rssi;
-	__u8	flags[4];
+	__le32	flags;
 	__le16	eir_len;
 	__u8	eir[0];
 } __packed;
@@ -460,3 +557,33 @@ struct mgmt_ev_device_unblocked {
 struct mgmt_ev_device_unpaired {
 	struct mgmt_addr_info addr;
 } __packed;
+
+#define MGMT_EV_PASSKEY_NOTIFY		0x0017
+struct mgmt_ev_passkey_notify {
+	struct mgmt_addr_info addr;
+	__le32	passkey;
+	__u8	entered;
+} __packed;
+
+#ifdef CONFIG_TIZEN_RANDOM
+#define MGMT_EV_NEW_REMOTE_IRK	0x0019
+struct mgmt_ev_new_remote_irk {
+	__u8	store_hint;
+	struct mgmt_irk_info key;
+} __packed;
+
+#define MGMT_EV_NEW_RPA		0x0020
+struct mgmt_ev_new_rpa {
+	struct mgmt_addr_info rp_addr;
+} __packed;
+#endif
+
+#ifdef CONFIG_TIZEN_WIP
+#define MGMT_EV_HARDWARE_ERROR		0x0022
+struct mgmt_ev_hardware_error {
+	__u8	error_code;
+} __packed;
+
+#define MGMT_EV_TX_TIMEOUT_ERROR		0x0023
+#endif
+

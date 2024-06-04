@@ -629,6 +629,16 @@ config IO_36
 
 comment "Processor Features"
 
+config ARM_TRUSTZONE
+	bool "Support TrustZone-enabled Trusted Execution Environment"
+	default n
+	help
+	  Select if you want a kernel to be executed at non-secure world.
+	  This option should be used with related secure bootloader and
+	  TrustZone software.
+
+	  If you don't know about TrustZone, say 'N'.
+
 config ARM_LPAE
 	bool "Support for the Large Physical Address Extension"
 	depends on MMU && CPU_32v7 && !CPU_32v6 && !CPU_32v5 && \
@@ -912,6 +922,32 @@ config ARM_DMA_MEM_BUFFERABLE
 	  behaviour.  Therefore, we offer this as an option.
 
 	  You are recommended say 'Y' here and debug any affected drivers.
+
+config ARM_DMA_IOMMU_USE_CMA
+	bool "Use Contiguous Memory Allocator also for IOMMU-aware DMA-mapping"
+	depends on ARM_DMA_USE_IOMMU && CMA
+	help
+	  IOMMU-aware DMA-mapping can allocate DMA buffers in chunks, which
+	  are later remmaped into contiguous IO address space. Larger chunks
+	  usually improves DMA performance because IOMMU needs less lookups
+	  for providing the access to the allocated buffer.
+
+	  This option lets kernel to use Contiguous Memory Allocator to ensure
+	  that the large chunks are always allocated instead of using multile
+	  small-page fallback.
+
+config ARM_DMA_IOMMU_MAX_ORDER
+	int "Select max order of single page for IOMMU-aware DMA-mapping"
+	depends on ARM_DMA_USE_IOMMU
+	default 4
+	help
+	  IOMMU-aware DMA-mapping can allocate DMA buffers in chunks, which
+	  are later remmaped into contiguous IO address space. Larger chunks
+	  usually improves DMA performance because IOMMU needs less lookups
+	  for providing the access to the allocated buffer. However, allcating
+	  larger buffers increases the allocation latency, because kernel
+	  tries to defragment memory. This parameter limits IOMMU allocation
+	  order to certain value. The order 4 means 64KiB.
 
 config ARCH_HAS_BARRIERS
 	bool

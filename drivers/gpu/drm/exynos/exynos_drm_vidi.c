@@ -38,8 +38,8 @@ struct vidi_win_data {
 	unsigned int		fb_width;
 	unsigned int		fb_height;
 	unsigned int		bpp;
+	unsigned int		refresh;
 	dma_addr_t		dma_addr;
-	void __iomem		*vaddr;
 	unsigned int		buf_offsize;
 	unsigned int		line_size;	/* bytes */
 	bool			enabled;
@@ -54,7 +54,10 @@ struct vidi_context {
 	unsigned int			default_win;
 	unsigned long			irq_flags;
 	unsigned int			connected;
-	bool				vblank_on;
+	unsigned int		refresh;
+	unsigned long		vblank_interval_us;
+	atomic_t			vblank_on;
+	atomic_t			win_updated;
 	bool				suspended;
 	struct work_struct		work;
 	struct mutex			lock;
@@ -84,6 +87,8 @@ static const char fake_edid_info[] = {
 	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 	0x00, 0x00, 0x00, 0x06
 };
+
+#define VBLANK_INTERVAL(x)	(USEC_PER_SEC / (x))
 
 static void vidi_fake_vblank_handler(struct work_struct *work);
 
@@ -237,7 +242,15 @@ static int vidi_enable_vblank(struct device *dev)
 		return -EPERM;
 
 	if (!test_and_set_bit(0, &ctx->irq_flags))
-		ctx->vblank_on = true;
+		atomic_set(&ctx->vblank_on, 1);
+
+	/*
+	 * in case of page flip request, vidi_finish_pageflip function
+	 * will not be called because vblank_on is true and then
+	 * that function will be called by manager_ops->win_commit callback
+	 */
+	if (atomic_read(&ctx->vblank_on))
+		schedule_work(&ctx->work);
 
 	return 0;
 }
@@ -252,7 +265,7 @@ static void vidi_disable_vblank(struct device *dev)
 		return;
 
 	if (test_and_clear_bit(0, &ctx->irq_flags))
-		ctx->vblank_on = false;
+		atomic_set(&ctx->vblank_on, 0);
 }
 
 static struct exynos_drm_manager_ops vidi_manager_ops = {
@@ -299,11 +312,21 @@ static void vidi_win_mode_set(struct device *dev,
 	win_data->fb_width = overlay->fb_width;
 	win_data->fb_height = overlay->fb_height;
 	win_data->dma_addr = overlay->dma_addr[0] + offset;
-	win_data->vaddr = overlay->vaddr[0] + offset;
 	win_data->bpp = overlay->bpp;
 	win_data->buf_offsize = (overlay->fb_width - overlay->crtc_width) *
 				(overlay->bpp >> 3);
 	win_data->line_size = overlay->crtc_width * (overlay->bpp >> 3);
+	win_data->refresh = overlay->refresh;
+
+	if (ctx->refresh != win_data->refresh) {
+		DRM_DEBUG_KMS("refresh = %d\n", win_data->refresh);
+
+		ctx->refresh = win_data->refresh;
+		if (ctx->refresh) {
+			ctx->vblank_interval_us =
+			(unsigned long int)(VBLANK_INTERVAL(ctx->refresh));
+		}
+	}
 
 	/*
 	 * some parts of win_data should be transferred to user side
@@ -314,9 +337,8 @@ static void vidi_win_mode_set(struct device *dev,
 			win_data->offset_x, win_data->offset_y);
 	DRM_DEBUG_KMS("ovl_width = %d, ovl_height = %d\n",
 			win_data->ovl_width, win_data->ovl_height);
-	DRM_DEBUG_KMS("paddr = 0x%lx, vaddr = 0x%lx\n",
-			(unsigned long)win_data->dma_addr,
-			(unsigned long)win_data->vaddr);
+	DRM_DEBUG_KMS("paddr = 0x%lx\n",
+			(unsigned long)win_data->dma_addr);
 	DRM_DEBUG_KMS("fb_width = %d, crtc_width = %d\n",
 			overlay->fb_width, overlay->crtc_width);
 }
@@ -344,7 +366,9 @@ static void vidi_win_commit(struct device *dev, int zpos)
 
 	DRM_DEBUG_KMS("dma_addr = 0x%x\n", win_data->dma_addr);
 
-	if (ctx->vblank_on)
+	atomic_set(&ctx->win_updated, 1);
+
+	if (atomic_read(&ctx->vblank_on))
 		schedule_work(&ctx->work);
 }
 
@@ -381,52 +405,6 @@ static struct exynos_drm_manager vidi_manager = {
 	.display_ops	= &vidi_display_ops,
 };
 
-static void vidi_finish_pageflip(struct drm_device *drm_dev, int crtc)
-{
-	struct exynos_drm_private *dev_priv = drm_dev->dev_private;
-	struct drm_pending_vblank_event *e, *t;
-	struct timeval now;
-	unsigned long flags;
-	bool is_checked = false;
-
-	spin_lock_irqsave(&drm_dev->event_lock, flags);
-
-	list_for_each_entry_safe(e, t, &dev_priv->pageflip_event_list,
-			base.link) {
-		/* if event's pipe isn't same as crtc then ignore it. */
-		if (crtc != e->pipe)
-			continue;
-
-		is_checked = true;
-
-		do_gettimeofday(&now);
-		e->event.sequence = 0;
-		e->event.tv_sec = now.tv_sec;
-		e->event.tv_usec = now.tv_usec;
-
-		list_move_tail(&e->base.link, &e->base.file_priv->event_list);
-		wake_up_interruptible(&e->base.file_priv->event_wait);
-	}
-
-	if (is_checked) {
-		/*
-		 * call drm_vblank_put only in case that drm_vblank_get was
-		 * called.
-		 */
-		if (atomic_read(&drm_dev->vblank_refcount[crtc]) > 0)
-			drm_vblank_put(drm_dev, crtc);
-
-		/*
-		 * don't off vblank if vblank_disable_allowed is 1,
-		 * because vblank would be off by timer handler.
-		 */
-		if (!drm_dev->vblank_disable_allowed)
-			drm_vblank_off(drm_dev, crtc);
-	}
-
-	spin_unlock_irqrestore(&drm_dev->event_lock, flags);
-}
-
 static void vidi_fake_vblank_handler(struct work_struct *work)
 {
 	struct vidi_context *ctx = container_of(work, struct vidi_context,
@@ -434,14 +412,27 @@ static void vidi_fake_vblank_handler(struct work_struct *work)
 	struct exynos_drm_subdrv *subdrv = &ctx->subdrv;
 	struct exynos_drm_manager *manager = subdrv->manager;
 
-	if (manager->pipe < 0)
+	if (manager->pipe < 0 || ctx->suspended ||
+	    !ctx->connected)
 		return;
 
-	/* refresh rate is about 50Hz. */
-	usleep_range(16000, 20000);
+	usleep_range(ctx->vblank_interval_us,
+		ctx->vblank_interval_us+1000);
 
-	drm_handle_vblank(subdrv->drm_dev, manager->pipe);
-	vidi_finish_pageflip(subdrv->drm_dev, manager->pipe);
+	mutex_lock(&ctx->lock);
+
+	if (atomic_read(&ctx->vblank_on))
+		drm_handle_vblank(subdrv->drm_dev, manager->pipe);
+
+	mutex_unlock(&ctx->lock);
+
+	if (atomic_read(&ctx->win_updated)) {
+		atomic_set(&ctx->win_updated, 0);
+		exynos_drm_crtc_finish_pageflip(subdrv->drm_dev, manager->pipe);
+	}
+
+	if (atomic_read(&ctx->vblank_on))
+		schedule_work(&ctx->work);
 }
 
 static int vidi_subdrv_probe(struct drm_device *drm_dev, struct device *dev)
@@ -468,7 +459,7 @@ static int vidi_subdrv_probe(struct drm_device *drm_dev, struct device *dev)
 	return 0;
 }
 
-static void vidi_subdrv_remove(struct drm_device *drm_dev)
+static void vidi_subdrv_remove(struct drm_device *drm_dev, struct device *dev)
 {
 	DRM_DEBUG_KMS("%s\n", __FILE__);
 
@@ -589,7 +580,7 @@ int vidi_connection_ioctl(struct drm_device *drm_dev, void *data,
 	}
 
 	if (vidi->connection)
-		ctx->raw_edid = (struct edid *)vidi->edid;
+		ctx->raw_edid = (struct edid *)(uint32_t)vidi->edid;
 
 	ctx->connected = vidi->connection;
 	drm_helper_hpd_irq_event(ctx->subdrv.drm_dev);
@@ -611,6 +602,8 @@ static int __devinit vidi_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	ctx->default_win = 0;
+	ctx->refresh = 60;
+	ctx->vblank_interval_us = 16000;
 
 	INIT_WORK(&ctx->work, vidi_fake_vblank_handler);
 

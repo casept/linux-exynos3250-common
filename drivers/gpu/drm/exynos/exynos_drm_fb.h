@@ -28,18 +28,27 @@
 #ifndef _EXYNOS_DRM_FB_H_
 #define _EXYNOS_DRM_FB_H
 
-static inline int exynos_drm_format_num_buffers(uint32_t format)
-{
-	switch (format) {
-	case DRM_FORMAT_NV12M:
-	case DRM_FORMAT_NV12MT:
-		return 2;
-	case DRM_FORMAT_YUV420M:
-		return 3;
-	default:
-		return 1;
-	}
-}
+#define to_exynos_fb(x)	container_of(x, struct exynos_drm_fb, fb)
+
+#define IS_PART_REGION_CHANGED(old, new)	(old->x != new->x || \
+							old->y != new->y || \
+							old->w != new->w || \
+							old->h != new->h)
+
+/*
+ * exynos specific framebuffer structure.
+ *
+ * @fb: drm framebuffer obejct.
+ * @buf_cnt: a buffer count to drm framebuffer.
+ * @exynos_gem_obj: array of exynos specific gem object containing a gem object.
+ */
+struct exynos_drm_fb {
+	struct drm_framebuffer		fb;
+	unsigned int			buf_cnt;
+	struct exynos_drm_gem_obj	*exynos_gem_obj[MAX_FB_BUFFER];
+	atomic_t			partial;
+	struct exynos_drm_partial_pos	part_pos;
+};
 
 struct drm_framebuffer *
 exynos_drm_framebuffer_init(struct drm_device *dev,
@@ -51,5 +60,31 @@ struct exynos_drm_gem_buf *exynos_drm_fb_buffer(struct drm_framebuffer *fb,
 						 int index);
 
 void exynos_drm_mode_config_init(struct drm_device *dev);
+
+/* set a buffer count to drm framebuffer. */
+void exynos_drm_fb_set_buf_cnt(struct drm_framebuffer *fb,
+						unsigned int cnt);
+
+/* get a buffer count to drm framebuffer. */
+unsigned int exynos_drm_fb_get_buf_cnt(struct drm_framebuffer *fb);
+
+#ifdef CONFIG_DMABUF_SYNC
+void *exynos_drm_dmabuf_sync_work(struct drm_framebuffer *fb);
+#else
+static inline void *exynos_drm_dmabuf_sync_work(struct drm_framebuffer *fb)
+{
+	return ERR_PTR(0);
+}
+#endif
+
+bool check_fb_partial_update(struct drm_framebuffer *fb);
+
+struct exynos_drm_partial_pos *get_partial_pos(struct drm_framebuffer *fb);
+
+void update_partial_region(struct drm_crtc *crtc,
+					struct exynos_drm_partial_pos *pos);
+
+void exynos_drm_fb_request_partial_update(struct drm_crtc *crtc,
+						struct drm_framebuffer *fb);
 
 #endif

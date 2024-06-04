@@ -802,6 +802,46 @@ u32 drm_vblank_count_and_time(struct drm_device *dev, int crtc,
 }
 EXPORT_SYMBOL(drm_vblank_count_and_time);
 
+static void send_vblank_event(struct drm_device *dev,
+		struct drm_pending_vblank_event *e,
+		unsigned long seq, struct timeval *now)
+{
+	WARN_ON_SMP(!spin_is_locked(&dev->event_lock));
+	e->event.sequence = seq;
+	e->event.tv_sec = now->tv_sec;
+	e->event.tv_usec = now->tv_usec;
+
+	list_add_tail(&e->base.link,
+		      &e->base.file_priv->event_list);
+	wake_up_interruptible(&e->base.file_priv->event_wait);
+	trace_drm_vblank_event_delivered(e->base.pid, e->pipe,
+					 e->event.sequence);
+}
+
+/**
+ * drm_send_vblank_event - helper to send vblank event after pageflip
+ * @dev: DRM device
+ * @crtc: CRTC in question
+ * @e: the event to send
+ *
+ * Updates sequence # and timestamp on event, and sends it to userspace.
+ * Caller must hold event lock.
+ */
+void drm_send_vblank_event(struct drm_device *dev, int crtc,
+		struct drm_pending_vblank_event *e)
+{
+	struct timeval now;
+	unsigned int seq;
+	if (crtc >= 0) {
+		seq = drm_vblank_count_and_time(dev, crtc, &now);
+	} else {
+		seq = 0;
+		do_gettimeofday(&now);
+	}
+	send_vblank_event(dev, e, seq, &now);
+}
+EXPORT_SYMBOL(drm_send_vblank_event);
+
 /**
  * drm_update_vblank_count - update the master vblank counter
  * @dev: DRM device
@@ -882,6 +922,8 @@ int drm_vblank_get(struct drm_device *dev, int crtc)
 	unsigned long irqflags, irqflags2;
 	int ret = 0;
 
+	dev->driver->prepare_vblank(dev, crtc);
+
 	spin_lock_irqsave(&dev->vbl_lock, irqflags);
 	/* Going from 0->1 means we have to enable interrupts again */
 	if (atomic_add_return(1, &dev->vblank_refcount[crtc]) == 1) {
@@ -907,6 +949,8 @@ int drm_vblank_get(struct drm_device *dev, int crtc)
 	} else {
 		if (!dev->vblank_enabled[crtc]) {
 			atomic_dec(&dev->vblank_refcount[crtc]);
+			DRM_ERROR("crtc[%d]:vblank_refcount[%d]\n", crtc,
+				atomic_read(&dev->vblank_refcount[crtc]) + 1);
 			ret = -EINVAL;
 		}
 	}
@@ -936,6 +980,13 @@ void drm_vblank_put(struct drm_device *dev, int crtc)
 }
 EXPORT_SYMBOL(drm_vblank_put);
 
+/**
+ * drm_vblank_off - disable vblank events on a CRTC
+ * @dev: DRM device
+ * @crtc: CRTC in question
+ *
+ * Caller must hold event lock.
+ */
 void drm_vblank_off(struct drm_device *dev, int crtc)
 {
 	struct drm_pending_vblank_event *e, *t;
@@ -949,22 +1000,19 @@ void drm_vblank_off(struct drm_device *dev, int crtc)
 
 	/* Send any queued vblank events, lest the natives grow disquiet */
 	seq = drm_vblank_count_and_time(dev, crtc, &now);
+
+	spin_lock(&dev->event_lock);
 	list_for_each_entry_safe(e, t, &dev->vblank_event_list, base.link) {
 		if (e->pipe != crtc)
 			continue;
 		DRM_DEBUG("Sending premature vblank event on disable: \
 			  wanted %d, current %d\n",
 			  e->event.sequence, seq);
-
-		e->event.sequence = seq;
-		e->event.tv_sec = now.tv_sec;
-		e->event.tv_usec = now.tv_usec;
+		list_del(&e->base.link);
 		drm_vblank_put(dev, e->pipe);
-		list_move_tail(&e->base.link, &e->base.file_priv->event_list);
-		wake_up_interruptible(&e->base.file_priv->event_wait);
-		trace_drm_vblank_event_delivered(e->base.pid, e->pipe,
-						 e->event.sequence);
+		send_vblank_event(dev, e, seq, &now);
 	}
+	spin_unlock(&dev->event_lock);
 
 	spin_unlock_irqrestore(&dev->vbl_lock, irqflags);
 }
@@ -1109,15 +1157,9 @@ static int drm_queue_vblank_event(struct drm_device *dev, int pipe,
 
 	e->event.sequence = vblwait->request.sequence;
 	if ((seq - vblwait->request.sequence) <= (1 << 23)) {
-		e->event.sequence = seq;
-		e->event.tv_sec = now.tv_sec;
-		e->event.tv_usec = now.tv_usec;
 		drm_vblank_put(dev, pipe);
-		list_add_tail(&e->base.link, &e->base.file_priv->event_list);
-		wake_up_interruptible(&e->base.file_priv->event_wait);
+		send_vblank_event(dev, e, seq, &now);
 		vblwait->reply.sequence = seq;
-		trace_drm_vblank_event_delivered(current->pid, pipe,
-						 vblwait->request.sequence);
 	} else {
 		/* drm_handle_vblank_events will call drm_vblank_put */
 		list_add_tail(&e->base.link, &dev->vblank_event_list);
@@ -1157,11 +1199,15 @@ int drm_wait_vblank(struct drm_device *dev, void *data,
 	int ret = 0;
 	unsigned int flags, seq, crtc, high_crtc;
 
-	if ((!drm_dev_to_irq(dev)) || (!dev->irq_enabled))
+	if ((!drm_dev_to_irq(dev)) || (!dev->irq_enabled)) {
+		DRM_ERROR("IRQ is disabled\n");
 		return -EINVAL;
+	}
 
-	if (vblwait->request.type & _DRM_VBLANK_SIGNAL)
+	if (vblwait->request.type & _DRM_VBLANK_SIGNAL) {
+		DRM_ERROR("Requested with _DRM_VBLANK_SIGNAL\n");
 		return -EINVAL;
+	}
 
 	if (vblwait->request.type &
 	    ~(_DRM_VBLANK_TYPES_MASK | _DRM_VBLANK_FLAGS_MASK |
@@ -1179,12 +1225,15 @@ int drm_wait_vblank(struct drm_device *dev, void *data,
 		crtc = high_crtc >> _DRM_VBLANK_HIGH_CRTC_SHIFT;
 	else
 		crtc = flags & _DRM_VBLANK_SECONDARY ? 1 : 0;
-	if (crtc >= dev->num_crtcs)
+	if (crtc >= dev->num_crtcs) {
+		DRM_ERROR("type[0x%x]: crtc[%u]: dev->num_crtcs[%u]\n",
+				vblwait->request.type, crtc, dev->num_crtcs);
 		return -EINVAL;
+	}
 
 	ret = drm_vblank_get(dev, crtc);
 	if (ret) {
-		DRM_DEBUG("failed to acquire vblank counter, %d\n", ret);
+		DRM_ERROR("failed to acquire vblank counter, %d\n", ret);
 		return ret;
 	}
 	seq = drm_vblank_count(dev, crtc);
@@ -1196,6 +1245,7 @@ int drm_wait_vblank(struct drm_device *dev, void *data,
 	case _DRM_VBLANK_ABSOLUTE:
 		break;
 	default:
+		DRM_ERROR("Unsupported type[0x%x]\n", vblwait->request.type);
 		ret = -EINVAL;
 		goto done;
 	}
@@ -1258,14 +1308,9 @@ void drm_handle_vblank_events(struct drm_device *dev, int crtc)
 		DRM_DEBUG("vblank event on %d, current %d\n",
 			  e->event.sequence, seq);
 
-		e->event.sequence = seq;
-		e->event.tv_sec = now.tv_sec;
-		e->event.tv_usec = now.tv_usec;
+		list_del(&e->base.link);
 		drm_vblank_put(dev, e->pipe);
-		list_move_tail(&e->base.link, &e->base.file_priv->event_list);
-		wake_up_interruptible(&e->base.file_priv->event_wait);
-		trace_drm_vblank_event_delivered(e->base.pid, e->pipe,
-						 e->event.sequence);
+		send_vblank_event(dev, e, seq, &now);
 	}
 
 	spin_unlock_irqrestore(&dev->event_lock, flags);

@@ -318,7 +318,6 @@ static inline int bfusb_recv_block(struct bfusb_data *data, int hdr, unsigned ch
 			return -ENOMEM;
 		}
 
-		skb->dev = (void *) data->hdev;
 		bt_cb(skb)->pkt_type = pkt_type;
 
 		data->reassembly = skb;
@@ -333,7 +332,7 @@ static inline int bfusb_recv_block(struct bfusb_data *data, int hdr, unsigned ch
 		memcpy(skb_put(data->reassembly, len), buf, len);
 
 	if (hdr & 0x08) {
-		hci_recv_frame(data->reassembly);
+		hci_recv_frame(data->hdev, data->reassembly);
 		data->reassembly = NULL;
 	}
 
@@ -465,9 +464,8 @@ static int bfusb_close(struct hci_dev *hdev)
 	return 0;
 }
 
-static int bfusb_send_frame(struct sk_buff *skb)
+static int bfusb_send_frame(struct hci_dev *hdev, struct sk_buff *skb)
 {
-	struct hci_dev *hdev = (struct hci_dev *) skb->dev;
 	struct bfusb_data *data;
 	struct sk_buff *nskb;
 	unsigned char buf[3];
@@ -653,7 +651,7 @@ static int bfusb_probe(struct usb_interface *intf, const struct usb_device_id *i
 	}
 
 	/* Initialize control structure and load firmware */
-	data = kzalloc(sizeof(struct bfusb_data), GFP_KERNEL);
+	data = devm_kzalloc(&intf->dev, sizeof(struct bfusb_data), GFP_KERNEL);
 	if (!data) {
 		BT_ERR("Can't allocate memory for control structure");
 		goto done;
@@ -674,7 +672,7 @@ static int bfusb_probe(struct usb_interface *intf, const struct usb_device_id *i
 
 	if (request_firmware(&firmware, "bfubase.frm", &udev->dev) < 0) {
 		BT_ERR("Firmware request failed");
-		goto error;
+		goto done;
 	}
 
 	BT_DBG("firmware data %p size %zu", firmware->data, firmware->size);
@@ -690,7 +688,7 @@ static int bfusb_probe(struct usb_interface *intf, const struct usb_device_id *i
 	hdev = hci_alloc_dev();
 	if (!hdev) {
 		BT_ERR("Can't allocate HCI device");
-		goto error;
+		goto done;
 	}
 
 	data->hdev = hdev;
@@ -708,7 +706,7 @@ static int bfusb_probe(struct usb_interface *intf, const struct usb_device_id *i
 	if (hci_register_dev(hdev) < 0) {
 		BT_ERR("Can't register HCI device");
 		hci_free_dev(hdev);
-		goto error;
+		goto done;
 	}
 
 	usb_set_intfdata(intf, data);
@@ -717,9 +715,6 @@ static int bfusb_probe(struct usb_interface *intf, const struct usb_device_id *i
 
 release:
 	release_firmware(firmware);
-
-error:
-	kfree(data);
 
 done:
 	return -EIO;
@@ -741,7 +736,6 @@ static void bfusb_disconnect(struct usb_interface *intf)
 
 	hci_unregister_dev(hdev);
 	hci_free_dev(hdev);
-	kfree(data);
 }
 
 static struct usb_driver bfusb_driver = {
@@ -749,6 +743,7 @@ static struct usb_driver bfusb_driver = {
 	.probe		= bfusb_probe,
 	.disconnect	= bfusb_disconnect,
 	.id_table	= bfusb_table,
+	.disable_hub_initiated_lpm = 1,
 };
 
 module_usb_driver(bfusb_driver);

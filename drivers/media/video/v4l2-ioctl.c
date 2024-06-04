@@ -188,6 +188,7 @@ static const char *v4l2_memory_names[] = {
 	[V4L2_MEMORY_MMAP]    = "mmap",
 	[V4L2_MEMORY_USERPTR] = "userptr",
 	[V4L2_MEMORY_OVERLAY] = "overlay",
+	[V4L2_MEMORY_DMABUF] = "dmabuf",
 };
 
 #define prt_names(a, arr) ((((a) >= 0) && ((a) < ARRAY_SIZE(arr))) ? \
@@ -936,6 +937,11 @@ static long __video_do_ioctl(struct file *file,
 		ret = ops->vidioc_qbuf(file, fh, p);
 		if (!ret)
 			dbgbuf(cmd, vfd, p);
+		break;
+	}
+	case VIDIOC_EXPBUF:
+	{
+		ret = ops->vidioc_expbuf(file, fh, arg);
 		break;
 	}
 	case VIDIOC_DQBUF:

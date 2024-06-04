@@ -1426,3 +1426,131 @@ int migrate_vmas(struct mm_struct *mm, const nodemask_t *to,
  	return err;
 }
 #endif
+
+#ifdef CONFIG_DMA_CMA
+
+/*
+ * Experimental CMA rebalance workaround - when there are too many free CMA
+ * pages, migrate some pages from other pageblocks to free space for next
+ * memory allocations, what should solve the unexpected OOM actions on
+ * unmovable page allocation(s).
+ */
+
+static struct page *
+__rebalance_alloc(struct page *page, unsigned long private, int **resultp)
+{
+	gfp_t gfp_mask = GFP_USER | __GFP_CMA | __GFP_NORETRY | __GFP_NOWARN;
+
+	if (PageHighMem(page))
+		gfp_mask |= __GFP_HIGHMEM;
+
+	return alloc_page(gfp_mask);
+}
+
+static int rebalance_cma_pageblock(unsigned long start, unsigned long end)
+{
+	unsigned long pfn = start;
+	int count = 0;
+	int ret = 0;
+
+	struct compact_control cc = {
+		.nr_migratepages = 0,
+		.order = -1,
+		.zone = page_zone(pfn_to_page(start)),
+		.sync = true,
+	};
+	INIT_LIST_HEAD(&cc.migratepages);
+
+	migrate_prep();
+
+	while (pfn < end) {
+		if (fatal_signal_pending(current))
+			break;
+
+		cc.nr_migratepages = 0;
+		pfn = isolate_migratepages_range(cc.zone, &cc,
+							 pfn, end, true);
+		if (!pfn)
+			break;
+
+		ret = migrate_pages(&cc.migratepages, __rebalance_alloc,
+				    0, false, MIGRATE_SYNC);
+		if (ret >= 0)
+			count += cc.nr_migratepages - ret;
+		else
+			break;
+
+		putback_lru_pages(&cc.migratepages);
+	}
+
+	putback_lru_pages(&cc.migratepages);
+
+	return count;
+}
+
+int cma_perform_rebalance(void)
+{
+	unsigned long nr_free = 0;
+	unsigned long nr_cma_free = 0;
+	unsigned long pfn, end;
+	struct zone *zone;
+	int count = 0;
+
+	first_zones_zonelist(node_zonelist(0, GFP_KERNEL),
+			     gfp_zone(GFP_KERNEL), NULL, &zone);
+	BUG_ON(!zone);
+
+	/* Use mutex trylock to avoid sleeping and blocking */
+
+	pfn = zone->zone_start_pfn;
+	end = pfn + zone->spanned_pages;
+
+	while (pfn < end && nr_free <= 2 * nr_cma_free) {
+		struct page *page = pfn_to_page(pfn);
+		int mt = get_pageblock_migratetype(page);
+		unsigned end_pfn = pfn + pageblock_nr_pages;
+
+		if (end_pfn > end)
+			end_pfn = end;
+
+		/* try to migrate any pages to CMA pageblocks, even from
+		   UNMOVABLE souce page blocks */
+			if (mt == MIGRATE_MOVABLE || mt == MIGRATE_UNMOVABLE)
+				count += rebalance_cma_pageblock(pfn, end_pfn);
+
+		pfn = end_pfn;
+		nr_free = zone_page_state(zone, NR_FREE_PAGES);
+		nr_cma_free = zone_page_state(zone, NR_FREE_CMA_PAGES);
+	}
+	if (count)
+		pr_info("CMA rebalance - migrated %d pages\n", count);
+	return count;
+}
+
+static int cma_shrinker(struct shrinker *shrink, struct shrink_control *sc)
+{
+	static unsigned long next;
+
+	/* use simple timeout to avoid busy looping */
+	while (time_before(jiffies, next))
+		return 0;
+
+	next = jiffies + 10*HZ;
+	return cma_perform_rebalance();
+}
+
+static struct shrinker cma_rebalance_shrinker = {
+	.shrink = cma_shrinker,
+	.seeks = DEFAULT_SEEKS * 10,
+};
+
+static int __init init_cma_rebalance(void)
+{
+	if (0) {
+		register_shrinker(&cma_rebalance_shrinker);
+	}
+	return 0;
+}
+device_initcall(init_cma_rebalance);
+
+#endif

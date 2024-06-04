@@ -40,6 +40,8 @@ struct exynos_drm_connector {
 	struct drm_connector	drm_connector;
 	uint32_t		encoder_id;
 	struct exynos_drm_manager *manager;
+	uint32_t		dpms;
+	uint32_t		panel_dpms;
 };
 
 /* convert exynos_video_timings to drm_display_mode */
@@ -103,6 +105,23 @@ convert_to_video_timing(struct fb_videomode *timing,
 		timing->vmode |= FB_VMODE_DOUBLE;
 }
 
+#ifdef CONFIG_SLP_FAKE_WVGA_DRM_MODE_SUPPORT
+static void exynos_drm_connector_support_fake_mode(unsigned int fake_hdisplay,
+		unsigned int fake_vdisplay, struct drm_display_mode *mode)
+{
+	if (!mode)
+		return;
+
+	/* change LCD physical size */
+	mode->width_mm *= (fake_hdisplay * 100 / mode->hdisplay) / 100;
+	mode->height_mm *= (fake_vdisplay * 100 / mode->vdisplay) / 100;
+
+	/* change resoultion */
+	mode->hdisplay = fake_hdisplay;
+	mode->vdisplay = fake_vdisplay;
+}
+#endif
+
 static int exynos_drm_connector_get_modes(struct drm_connector *connector)
 {
 	struct exynos_drm_connector *exynos_connector =
@@ -147,29 +166,44 @@ static int exynos_drm_connector_get_modes(struct drm_connector *connector)
 
 		drm_mode_connector_update_edid_property(connector, edid);
 		count = drm_add_edid_modes(connector, edid);
-
-		kfree(connector->display_info.raw_edid);
-		connector->display_info.raw_edid = edid;
+		kfree(edid);
 	} else {
-		struct drm_display_mode *mode = drm_mode_create(connector->dev);
+		int i;
 		struct exynos_drm_panel_info *panel;
 
 		if (display_ops->get_panel)
 			panel = display_ops->get_panel(manager->dev);
-		else {
-			drm_mode_destroy(connector->dev, mode);
+		else
 			return 0;
+
+		for (i = 0; i < panel->mode_count; i++) {
+			struct drm_display_mode *mode =
+				drm_mode_create(connector->dev);
+
+			if (!mode) {
+				DRM_ERROR("failed to create mode.\n");
+				return 0;
+			}
+
+			panel->timing.refresh = panel->mode[i].refresh;
+			panel->timing.vmode = panel->mode[i].vmode;
+
+			convert_to_display_mode(mode, panel);
+			connector->display_info.width_mm = mode->width_mm;
+			connector->display_info.height_mm = mode->height_mm;
+
+#ifdef CONFIG_SLP_FAKE_WVGA_DRM_MODE_SUPPORT
+			if (connector->connector_type == DRM_MODE_CONNECTOR_LVDS)
+				exynos_drm_connector_support_fake_mode(480, 800, mode);
+#endif
+
+			mode->type = DRM_MODE_TYPE_DRIVER |
+				DRM_MODE_TYPE_PREFERRED;
+			drm_mode_set_name(mode);
+			drm_mode_probed_add(connector, mode);
 		}
 
-		convert_to_display_mode(mode, panel);
-		connector->display_info.width_mm = mode->width_mm;
-		connector->display_info.height_mm = mode->height_mm;
-
-		mode->type = DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED;
-		drm_mode_set_name(mode);
-		drm_mode_probed_add(connector, mode);
-
-		count = 1;
+		count = panel->mode_count;
 	}
 
 	return count;
@@ -224,6 +258,46 @@ static struct drm_connector_helper_funcs exynos_connector_helper_funcs = {
 	.mode_valid	= exynos_drm_connector_mode_valid,
 	.best_encoder	= exynos_drm_best_encoder,
 };
+
+void exynos_drm_display_power(struct drm_connector *connector, int mode)
+{
+	struct drm_encoder *encoder = exynos_drm_best_encoder(connector);
+	struct exynos_drm_connector *exynos_connector;
+	struct exynos_drm_manager *manager = exynos_drm_get_manager(encoder);
+	struct exynos_drm_display_ops *display_ops = manager->display_ops;
+
+	exynos_connector = to_exynos_connector(connector);
+
+	if (exynos_connector->dpms == mode) {
+		DRM_DEBUG_KMS("desired dpms mode is same as previous one.\n");
+		return;
+	}
+
+	if (display_ops && display_ops->power_on)
+		display_ops->power_on(manager->dev, mode);
+
+	exynos_connector->dpms = mode;
+}
+
+static void exynos_drm_connector_dpms(struct drm_connector *connector,
+					int mode)
+{
+	struct exynos_drm_connector *exynos_connector =
+					to_exynos_connector(connector);
+
+	DRM_DEBUG_KMS("%s\n", __FILE__);
+
+	/*
+	 * in case that drm_crtc_helper_set_mode() is called,
+	 * encoder/crtc->funcs->dpms() will be just returned
+	 * because they already were DRM_MODE_DPMS_ON so only
+	 * exynos_drm_display_power() will be called.
+	 */
+	drm_helper_connector_dpms(connector, mode);
+
+	exynos_connector->panel_dpms = mode;
+	exynos_drm_display_power(connector, mode);
+}
 
 static int exynos_drm_connector_fill_modes(struct drm_connector *connector,
 				unsigned int max_width, unsigned int max_height)
@@ -283,12 +357,76 @@ static void exynos_drm_connector_destroy(struct drm_connector *connector)
 	kfree(exynos_connector);
 }
 
+static int exynos_drm_connector_set_property(struct drm_connector *connector,
+					struct drm_property *property,
+					uint64_t val)
+{
+	struct drm_device *dev = connector->dev;
+	struct exynos_drm_private *dev_priv = dev->dev_private;
+	struct exynos_drm_connector *exynos_connector =
+		to_exynos_connector(connector);
+
+	DRM_DEBUG_KMS("%s\n", __func__);
+
+	if (dev_priv->connector_panel_dpms_property == property) {
+		uint32_t panel_dpms = val;
+
+		if (exynos_connector->panel_dpms == panel_dpms)
+			return 0;
+
+		switch (panel_dpms) {
+		case DRM_MODE_DPMS_ON ... DRM_MODE_DPMS_OFF:
+			exynos_connector->panel_dpms = panel_dpms;
+			exynos_drm_display_power(connector, panel_dpms);
+			break;
+		default:
+			return -EINVAL;
+		}
+
+		return 0;
+	}
+
+	return -EINVAL;
+}
+
 static struct drm_connector_funcs exynos_connector_funcs = {
-	.dpms		= drm_helper_connector_dpms,
+	.dpms		= exynos_drm_connector_dpms,
 	.fill_modes	= exynos_drm_connector_fill_modes,
 	.detect		= exynos_drm_connector_detect,
 	.destroy	= exynos_drm_connector_destroy,
+	.set_property	= exynos_drm_connector_set_property,
 };
+
+static const struct drm_prop_enum_list panel_dpms_names[] = {
+	{ DRM_MODE_DPMS_ON, "On" },
+	{ DRM_MODE_DPMS_STANDBY, "Standby" },
+	{ DRM_MODE_DPMS_SUSPEND, "Suspend" },
+	{ DRM_MODE_DPMS_OFF, "Off" },
+};
+
+static void exynos_drm_connector_attach_property
+		(struct drm_connector *connector)
+{
+	struct drm_device *dev = connector->dev;
+	struct exynos_drm_private *dev_priv = dev->dev_private;
+	struct drm_property *prop;
+
+	DRM_DEBUG_KMS("%s\n", __func__);
+
+	prop = dev_priv->connector_panel_dpms_property;
+	if (!prop) {
+		prop = drm_property_create_enum(dev, 0, "panel",
+				panel_dpms_names, ARRAY_SIZE(panel_dpms_names));
+		if (!prop) {
+			DRM_ERROR("failed to create panel property.\n");
+			return;
+		}
+
+		dev_priv->connector_panel_dpms_property = prop;
+	}
+
+	drm_object_attach_property(&connector->base, prop, 0);
+}
 
 struct drm_connector *exynos_drm_connector_create(struct drm_device *dev,
 						   struct drm_encoder *encoder)
@@ -315,6 +453,10 @@ struct drm_connector *exynos_drm_connector_create(struct drm_device *dev,
 		connector->interlace_allowed = true;
 		connector->polled = DRM_CONNECTOR_POLL_HPD;
 		break;
+	case EXYNOS_DISPLAY_TYPE_LCD:
+		type = DRM_MODE_CONNECTOR_LVDS;
+		connector->interlace_allowed = true;
+		break;
 	case EXYNOS_DISPLAY_TYPE_VIDI:
 		type = DRM_MODE_CONNECTOR_VIRTUAL;
 		connector->polled = DRM_CONNECTOR_POLL_HPD;
@@ -333,6 +475,8 @@ struct drm_connector *exynos_drm_connector_create(struct drm_device *dev,
 
 	exynos_connector->encoder_id = encoder->base.id;
 	exynos_connector->manager = manager;
+	exynos_connector->dpms = DRM_MODE_DPMS_OFF;
+	connector->dpms = DRM_MODE_DPMS_OFF;
 	connector->encoder = encoder;
 
 	err = drm_mode_connector_attach_encoder(connector, encoder);
@@ -340,6 +484,8 @@ struct drm_connector *exynos_drm_connector_create(struct drm_device *dev,
 		DRM_ERROR("failed to attach a connector to a encoder\n");
 		goto err_sysfs;
 	}
+
+	exynos_drm_connector_attach_property(connector);
 
 	DRM_DEBUG_KMS("connector has been created\n");
 
@@ -351,4 +497,16 @@ err_connector:
 	drm_connector_cleanup(connector);
 	kfree(exynos_connector);
 	return NULL;
+}
+
+int exynos_drm_connector_set_partial_region(struct drm_connector *connector,
+					struct exynos_drm_partial_pos *pos)
+{
+	struct exynos_drm_connector *exynos_connector =
+					to_exynos_connector(connector);
+	struct exynos_drm_manager *manager = exynos_connector->manager;
+	struct exynos_drm_display_ops *display_ops =
+					manager->display_ops;
+
+	return display_ops->set_partial_region(manager->dev, pos);
 }

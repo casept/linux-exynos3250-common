@@ -38,6 +38,10 @@
 #include <linux/interrupt.h>
 #include <linux/percpu.h>
 #include <linux/slab.h>
+#include <linux/syscore_ops.h>
+#ifdef CONFIG_PM_SLEEP_HISTORY
+#include <linux/power/sleep_history.h>
+#endif
 
 #include <asm/irq.h>
 #include <asm/exception.h>
@@ -59,15 +63,28 @@ struct gic_chip_data {
 	u32 saved_spi_target[DIV_ROUND_UP(1020, 4)];
 	u32 __percpu *saved_ppi_enable;
 	u32 __percpu *saved_ppi_conf;
+	u32 __percpu *saved_sgi_pending;
 #endif
 	struct irq_domain *domain;
 	unsigned int gic_irqs;
 #ifdef CONFIG_GIC_NON_BANKED
 	void __iomem *(*get_base)(union gic_base *);
 #endif
+	unsigned int max_irq;
+#ifdef CONFIG_PM
+	unsigned int wakeup_irqs[32];
+	unsigned int enabled_irqs[32];
+#endif
 };
 
 static DEFINE_RAW_SPINLOCK(irq_controller_lock);
+
+/*
+ * The GIC mapping of CPU interfaces does not necessarily match
+ * the logical CPU numbering.  Let's use a mapping as returned
+ * by the GIC itself.
+ */
+static u8 gic_cpu_map[8] __read_mostly;
 
 /*
  * Supported arch specific GIC irq extension.
@@ -84,6 +101,10 @@ struct irq_chip gic_arch_extn = {
 
 #ifndef MAX_GIC_NR
 #define MAX_GIC_NR	1
+#endif
+
+#if defined(CONFIG_BL_SWITCHER)
+DEFINE_PER_CPU(bool, is_switching);
 #endif
 
 static struct gic_chip_data gic_data[MAX_GIC_NR] __read_mostly;
@@ -161,6 +182,91 @@ static void gic_unmask_irq(struct irq_data *d)
 	writel_relaxed(mask, gic_dist_base(d) + GIC_DIST_ENABLE_SET + (gic_irq(d) / 32) * 4);
 	raw_spin_unlock(&irq_controller_lock);
 }
+
+#ifdef CONFIG_PM
+static int gic_suspend_one(struct gic_chip_data *gic)
+{
+	unsigned int i;
+	void __iomem *base = gic_data_dist_base(gic);
+
+	for (i = 0; i * 32 < gic->max_irq; i++) {
+		gic->enabled_irqs[i]
+			= readl_relaxed(base + GIC_DIST_ENABLE_SET + i * 4);
+	}
+	mb();
+	return 0;
+}
+
+static int gic_suspend(void)
+{
+	int i;
+	for (i = 0; i < MAX_GIC_NR; i++)
+		gic_suspend_one(&gic_data[i]);
+	return 0;
+}
+static void gic_show_resume_irq(struct gic_chip_data *gic)
+{
+	unsigned int i;
+	u32 enabled;
+	unsigned long pending[32];
+	void __iomem *base = gic_data_dist_base(gic);
+#ifdef CONFIG_PM_SLEEP_HISTORY
+	int irq = NR_IRQS;
+#endif
+
+	pr_debug("%s: \n", __func__);
+
+	raw_spin_lock(&irq_controller_lock);
+	pr_info("%s: ", __func__);
+	for (i = 0; i * 32 < gic->max_irq; i++) {
+		enabled = readl_relaxed(base + GIC_DIST_ENABLE_CLEAR + i * 4);
+		pending[i] = readl_relaxed(base + GIC_DIST_PENDING_SET + i * 4);
+
+		pr_cont("[%d]0x%x:0x%lx ", i, enabled, pending[i]);
+		pending[i] &= enabled;
+	}
+	pr_cont("\n");
+	raw_spin_unlock(&irq_controller_lock);
+
+	for (i = find_first_bit(pending, gic->max_irq);
+	     i < gic->max_irq;
+	     i = find_next_bit(pending, gic->max_irq, i+1)) {
+		pr_warning("%s: %d triggered\n", __func__, i);
+#ifdef CONFIG_PM_SLEEP_HISTORY
+		irq = i;
+		sleep_history_marker(SLEEP_HISTORY_WAKEUP_IRQ, NULL, (void *)&irq);
+#endif
+
+	}
+}
+
+static void gic_resume_one(struct gic_chip_data *gic)
+{
+	gic_show_resume_irq(gic);
+
+	mb();
+}
+
+static void gic_resume(void)
+{
+	int i;
+	for (i = 0; i < MAX_GIC_NR; i++)
+		gic_resume_one(&gic_data[i]);
+}
+
+static struct syscore_ops gic_syscore_ops = {
+	.suspend = gic_suspend,
+	.resume = gic_resume,
+};
+
+static int __init gic_init_sys(void)
+{
+	register_syscore_ops(&gic_syscore_ops);
+	return 0;
+}
+arch_initcall(gic_init_sys);
+
+#endif
 
 static void gic_eoi_irq(struct irq_data *d)
 {
@@ -241,10 +347,9 @@ static int gic_set_affinity(struct irq_data *d, const struct cpumask *mask_val,
 	if (cpu >= 8 || cpu >= nr_cpu_ids)
 		return -EINVAL;
 
-	mask = 0xff << shift;
-	bit = 1 << (cpu_logical_map(cpu) + shift);
-
 	raw_spin_lock(&irq_controller_lock);
+	mask = 0xff << shift;
+	bit = gic_cpu_map[cpu] << shift;
 	val = readl_relaxed(reg) & ~mask;
 	writel_relaxed(val | bit, reg);
 	raw_spin_unlock(&irq_controller_lock);
@@ -257,6 +362,20 @@ static int gic_set_affinity(struct irq_data *d, const struct cpumask *mask_val,
 static int gic_set_wake(struct irq_data *d, unsigned int on)
 {
 	int ret = -ENXIO;
+	unsigned int reg_offset, bit_offset;
+	unsigned int gicirq = gic_irq(d);
+	struct gic_chip_data *gic_data = irq_data_get_irq_chip_data(d);
+
+	/* per-cpu interrupts cannot be wakeup interrupts */
+	WARN_ON(gicirq < 32);
+
+	reg_offset = gicirq / 32;
+	bit_offset = gicirq % 32;
+
+	if (on)
+		gic_data->wakeup_irqs[reg_offset] |=  1 << bit_offset;
+	else
+		gic_data->wakeup_irqs[reg_offset] &=  ~(1 << bit_offset);
 
 	if (gic_arch_extn.irq_set_wake)
 		ret = gic_arch_extn.irq_set_wake(d, on);
@@ -349,11 +468,6 @@ static void __init gic_dist_init(struct gic_chip_data *gic)
 	u32 cpumask;
 	unsigned int gic_irqs = gic->gic_irqs;
 	void __iomem *base = gic_data_dist_base(gic);
-	u32 cpu = cpu_logical_map(smp_processor_id());
-
-	cpumask = 1 << cpu;
-	cpumask |= cpumask << 8;
-	cpumask |= cpumask << 16;
 
 	writel_relaxed(0, base + GIC_DIST_CTRL);
 
@@ -366,6 +480,7 @@ static void __init gic_dist_init(struct gic_chip_data *gic)
 	/*
 	 * Set all global interrupts to this CPU only.
 	 */
+	cpumask = readl_relaxed(base + GIC_DIST_TARGET + 0);
 	for (i = 32; i < gic_irqs; i += 4)
 		writel_relaxed(cpumask, base + GIC_DIST_TARGET + i * 4 / 4);
 
@@ -382,6 +497,8 @@ static void __init gic_dist_init(struct gic_chip_data *gic)
 	for (i = 32; i < gic_irqs; i += 32)
 		writel_relaxed(0xffffffff, base + GIC_DIST_ENABLE_CLEAR + i * 4 / 32);
 
+	gic->max_irq = gic_irqs;
+
 	writel_relaxed(1, base + GIC_DIST_CTRL);
 }
 
@@ -389,7 +506,23 @@ static void __cpuinit gic_cpu_init(struct gic_chip_data *gic)
 {
 	void __iomem *dist_base = gic_data_dist_base(gic);
 	void __iomem *base = gic_data_cpu_base(gic);
+	unsigned int cpu_mask, cpu = smp_processor_id();
 	int i;
+
+	/*
+	 * Get what the GIC says our CPU mask is.
+	 */
+	BUG_ON(cpu >= 8);
+	cpu_mask = readl_relaxed(dist_base + GIC_DIST_TARGET + 0);
+	gic_cpu_map[cpu] = cpu_mask;
+
+	/*
+	 * Clear our mask from the other map entries in case they're
+	 * still undefined.
+	 */
+	for (i = 0; i < 8; i++)
+		if (i != cpu)
+			gic_cpu_map[i] &= ~cpu_mask;
 
 	/*
 	 * Deal with the banked PPI and SGI interrupts - disable all
@@ -406,6 +539,10 @@ static void __cpuinit gic_cpu_init(struct gic_chip_data *gic)
 
 	writel_relaxed(0xf0, base + GIC_CPU_PRIMASK);
 	writel_relaxed(1, base + GIC_CPU_CTRL);
+#if defined(CONFIG_BL_SWITCHER)
+	per_cpu(is_switching, cpu) = false;
+#endif
+
 }
 
 #ifdef CONFIG_CPU_PM
@@ -503,13 +640,24 @@ static void gic_cpu_save(unsigned int gic_nr)
 		return;
 
 	ptr = __this_cpu_ptr(gic_data[gic_nr].saved_ppi_enable);
-	for (i = 0; i < DIV_ROUND_UP(32, 32); i++)
+	for (i = 0; i < DIV_ROUND_UP(32, 32); i++) {
 		ptr[i] = readl_relaxed(dist_base + GIC_DIST_ENABLE_SET + i * 4);
+		writel_relaxed(ptr[i], dist_base + GIC_DIST_ENABLE_CLEAR + i * 4);
+	}
 
 	ptr = __this_cpu_ptr(gic_data[gic_nr].saved_ppi_conf);
 	for (i = 0; i < DIV_ROUND_UP(32, 16); i++)
 		ptr[i] = readl_relaxed(dist_base + GIC_DIST_CONFIG + i * 4);
 
+#if defined(CONFIG_BL_SWITCHER)
+	if (per_cpu(is_switching, smp_processor_id()) == true) {
+		ptr = __this_cpu_ptr(gic_data[gic_nr].saved_sgi_pending);
+		for (i = 0; i < DIV_ROUND_UP(16, 4); i++) {
+			ptr[i] = readl_relaxed(dist_base + GIC_DIST_SGI_PENDING_SET + i * 4);
+			writel_relaxed(ptr[i], dist_base + GIC_DIST_SGI_PENDING_CLEAR + i * 4);
+		}
+	}
+#endif
 }
 
 static void gic_cpu_restore(unsigned int gic_nr)
@@ -539,6 +687,14 @@ static void gic_cpu_restore(unsigned int gic_nr)
 	for (i = 0; i < DIV_ROUND_UP(32, 4); i++)
 		writel_relaxed(0xa0a0a0a0, dist_base + GIC_DIST_PRI + i * 4);
 
+#if defined(CONFIG_BL_SWITCHER)
+	if (per_cpu(is_switching, smp_processor_id()) == true) {
+		ptr = __this_cpu_ptr(gic_data[gic_nr].saved_sgi_pending);
+		for (i = 0; i < DIV_ROUND_UP(16, 4); i++)
+			writel_relaxed(ptr[i], dist_base + GIC_DIST_SGI_PENDING_SET + i * 4);
+		per_cpu(is_switching, smp_processor_id()) = false;
+	}
+#endif
 	writel_relaxed(0xf0, cpu_base + GIC_CPU_PRIMASK);
 	writel_relaxed(1, cpu_base + GIC_CPU_CTRL);
 }
@@ -587,6 +743,10 @@ static void __init gic_pm_init(struct gic_chip_data *gic)
 	gic->saved_ppi_conf = __alloc_percpu(DIV_ROUND_UP(32, 16) * 4,
 		sizeof(u32));
 	BUG_ON(!gic->saved_ppi_conf);
+
+	gic->saved_sgi_pending = __alloc_percpu(DIV_ROUND_UP(16, 4) * 4,
+		sizeof(u32));
+	BUG_ON(!gic->saved_sgi_pending);
 
 	if (gic == &gic_data[0])
 		cpu_pm_register_notifier(&gic_notifier_block);
@@ -646,7 +806,7 @@ void __init gic_init_bases(unsigned int gic_nr, int irq_start,
 {
 	irq_hw_number_t hwirq_base;
 	struct gic_chip_data *gic;
-	int gic_irqs, irq_base;
+	int gic_irqs, irq_base, i;
 
 	BUG_ON(gic_nr >= MAX_GIC_NR);
 
@@ -683,6 +843,13 @@ void __init gic_init_bases(unsigned int gic_nr, int irq_start,
 	}
 
 	/*
+	 * Initialize the CPU interface map to all CPUs.
+	 * It will be refined as each CPU probes its ID.
+	 */
+	for (i = 0; i < 8; i++)
+		gic_cpu_map[i] = 0xff;
+
+	/*
 	 * For primary GICs, skip over SGIs.
 	 * For secondary GICs, skip over PPIs, too.
 	 */
@@ -699,6 +866,7 @@ void __init gic_init_bases(unsigned int gic_nr, int irq_start,
 	 * The GIC only supports up to 1020 interrupt sources.
 	 */
 	gic_irqs = readl_relaxed(gic_data_dist_base(gic) + GIC_DIST_CTR) & 0x1f;
+	pr_debug("%s:  ITLineNumber=0x%x\n", __func__, gic_irqs);
 	gic_irqs = (gic_irqs + 1) * 32;
 	if (gic_irqs > 1020)
 		gic_irqs = 1020;
@@ -733,11 +901,13 @@ void __cpuinit gic_secondary_init(unsigned int gic_nr)
 void gic_raise_softirq(const struct cpumask *mask, unsigned int irq)
 {
 	int cpu;
-	unsigned long map = 0;
+	unsigned long map = 0, flags;
+
+	raw_spin_lock_irqsave(&irq_controller_lock, flags);
 
 	/* Convert our logical CPU mask into a physical one. */
 	for_each_cpu(cpu, mask)
-		map |= 1 << cpu_logical_map(cpu);
+		map |= gic_cpu_map[cpu];
 
 	/*
 	 * Ensure that stores to Normal memory are visible to the
@@ -747,6 +917,58 @@ void gic_raise_softirq(const struct cpumask *mask, unsigned int irq)
 
 	/* this always happens on GIC0 */
 	writel_relaxed(map << 16 | irq, gic_data_dist_base(&gic_data[0]) + GIC_DIST_SOFTINT);
+
+	raw_spin_unlock_irqrestore(&irq_controller_lock, flags);
+}
+#endif
+
+#ifdef CONFIG_BL_SWITCHER
+/*
+ * gic_migrate_target - migrate IRQs to another PU interface
+ *
+ * @new_cpu_id: the CPU target ID to migrate IRQs to
+ *
+ * Migrate all peripheral interrupts with a target matching the current CPU
+ * to the interface corresponding to @new_cpu_id.  The CPU interface mapping
+ * is also updated.  Targets to other CPU interfaces are unchanged.
+ * This must be called with IRQs locally disabled.
+ */
+void gic_migrate_target(unsigned int new_cpu_id)
+{
+	unsigned int old_cpu_id, gic_irqs, gic_nr = 0;
+	void __iomem *dist_base;
+	int i, ror_val, cpu = smp_processor_id();
+	u32 val, old_mask, active_mask;
+
+	if (gic_nr >= MAX_GIC_NR)
+		BUG();
+
+	dist_base = gic_data_dist_base(&gic_data[gic_nr]);
+	if (!dist_base)
+		return;
+	gic_irqs = gic_data[gic_nr].gic_irqs;
+
+	old_cpu_id = __ffs(gic_cpu_map[cpu]);
+	old_mask = 0x01010101 << old_cpu_id;
+	ror_val = (old_cpu_id - new_cpu_id) & 31;
+
+	raw_spin_lock(&irq_controller_lock);
+
+	per_cpu(is_switching, cpu) = true;
+
+	gic_cpu_map[cpu] = 1 << new_cpu_id;
+
+	for (i = 8; i < DIV_ROUND_UP(gic_irqs, 4); i++) {
+		val = readl_relaxed(dist_base + GIC_DIST_TARGET + i * 4);
+		active_mask = val & old_mask;
+		if (active_mask) {
+			val &= ~active_mask;
+			val |= ror32(active_mask, ror_val);
+			writel_relaxed(val, dist_base + GIC_DIST_TARGET + i * 4);
+		}
+	}
+
+	raw_spin_unlock(&irq_controller_lock);
 }
 #endif
 

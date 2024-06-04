@@ -17,6 +17,9 @@
 #include <linux/idr.h>
 #include <linux/slab.h>
 #include <linux/workqueue.h>
+#ifdef CONFIG_PM_SLEEP_HISTORY
+#include <linux/power/sleep_history.h>
+#endif
 
 #include "rtc-core.h"
 
@@ -53,6 +56,10 @@ static int rtc_suspend(struct device *dev, pm_message_t mesg)
 	rtc_read_time(rtc, &tm);
 	getnstimeofday(&old_system);
 	rtc_tm_to_time(&tm, &old_rtc.tv_sec);
+
+#ifdef CONFIG_PM_SLEEP_HISTORY
+	sleep_history_marker(SLEEP_HISTORY_SUSPEND_RTC_ENTRY, &old_system, NULL);
+#endif
 
 
 	/*
@@ -97,10 +104,17 @@ static int rtc_resume(struct device *dev)
 	rtc_tm_to_time(&tm, &new_rtc.tv_sec);
 	new_rtc.tv_nsec = 0;
 
+#ifdef CONFIG_PM_SLEEP_HISTORY
+	if (new_rtc.tv_sec < old_rtc.tv_sec) {
+		pr_debug("%s:  time travel!\n", dev_name(&rtc->dev));
+		goto store_history;
+	}
+#else
 	if (new_rtc.tv_sec < old_rtc.tv_sec) {
 		pr_debug("%s:  time travel!\n", dev_name(&rtc->dev));
 		return 0;
 	}
+#endif
 
 	/* calculate the RTC time delta (sleep time)*/
 	sleep_time = timespec_sub(new_rtc, old_rtc);
@@ -117,6 +131,12 @@ static int rtc_resume(struct device *dev)
 
 	if (sleep_time.tv_sec >= 0)
 		timekeeping_inject_sleeptime(&sleep_time);
+
+#ifdef CONFIG_PM_SLEEP_HISTORY
+store_history:
+	getnstimeofday(&new_system);
+	sleep_history_marker(SLEEP_HISTORY_SUSPEND_RTC_EXIT, &new_system, NULL);
+#endif
 	return 0;
 }
 

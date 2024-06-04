@@ -14,7 +14,26 @@ enum {
 	PM_QOS_RESERVED = 0,
 	PM_QOS_CPU_DMA_LATENCY,
 	PM_QOS_NETWORK_LATENCY,
+	PM_QOS_MEMORY_THROUGHPUT,
+	PM_QOS_DEVICE_THROUGHPUT,
+	PM_QOS_BUS_THROUGHPUT,
 	PM_QOS_NETWORK_THROUGHPUT,
+	PM_QOS_CPU_FREQ_MIN,
+	PM_QOS_CPU_FREQ_MAX,
+	PM_QOS_CPU_ONLINE_MIN,
+	PM_QOS_CPU_ONLINE_MAX,
+
+	PM_QOS_KFC_FREQ_MIN,
+	PM_QOS_KFC_FREQ_MAX,
+
+	PM_QOS_TOUCH_PRESS,
+	PM_QOS_TOUCH_MOVE,
+	PM_QOS_TOUCH_RELEASE,
+
+	PM_QOS_CPU_GOV_UP_LEVEL,
+	PM_QOS_CPU_FREQ_UP_THRESHOLD,
+
+	PM_QOS_DISPLAY_THROUGHPUT,
 
 	/* insert new class ID */
 	PM_QOS_NUM_CLASSES,
@@ -24,8 +43,30 @@ enum {
 
 #define PM_QOS_CPU_DMA_LAT_DEFAULT_VALUE	(2000 * USEC_PER_SEC)
 #define PM_QOS_NETWORK_LAT_DEFAULT_VALUE	(2000 * USEC_PER_SEC)
+#define PM_QOS_MEMORY_THROUGHPUT_DEFAULT_VALUE	0
+#define PM_QOS_DEVICE_THROUGHPUT_DEFAULT_VALUE	0
+#define PM_QOS_BUS_THROUGHPUT_DEFAULT_VALUE	0
+#define PM_QOS_DISPLAY_THROUGHPUT_DEFAULT_VALUE 0
 #define PM_QOS_NETWORK_THROUGHPUT_DEFAULT_VALUE	0
 #define PM_QOS_DEV_LAT_DEFAULT_VALUE		0
+#define PM_QOS_CPU_FREQ_MIN_DEFAULT_VALUE	0
+#define PM_QOS_CPU_FREQ_MAX_DEFAULT_VALUE	INT_MAX
+
+#define PM_QOS_CPU_ONLINE_MIN_DEFAULT_VALUE	1
+#define PM_QOS_CPU_ONLINE_MAX_DEFAULT_VALUE	2
+
+#define PM_QOS_KFC_FREQ_MIN_DEFAULT_VALUE	0
+#define PM_QOS_KFC_FREQ_MAX_DEFAULT_VALUE	INT_MAX
+
+#define PM_QOS_TOUCH_PRESS_DEFAULT_VALUE		400000
+#define PM_QOS_TOUCH_MOVE_DEFAULT_VALUE		300000
+#define PM_QOS_TOUCH_RELEASE_DEFAULT_VALUE		400000
+
+#define PM_QOS_CPU_GOV_UP_LEVEL_DEFAULT_VALUE		0
+#define PM_QOS_CPU_FREQ_UP_THRESHOLD_DEFAULT_VALUE		95
+
+#define PM_QOS_FLAG_NO_POWER_OFF	(1 << 0)
+#define PM_QOS_FLAG_REMOTE_WAKEUP	(1 << 1)
 
 struct pm_qos_request {
 	struct plist_node node;
@@ -41,7 +82,9 @@ struct dev_pm_qos_request {
 enum pm_qos_type {
 	PM_QOS_UNITIALIZED,
 	PM_QOS_MAX,		/* return the largest value */
-	PM_QOS_MIN		/* return the smallest value */
+	PM_QOS_MIN,		/* return the smallest value */
+	PM_QOS_SUM,		/* return sum of values greater than zero */
+	PM_QOS_FORCE_MAX,
 };
 
 /*
@@ -71,6 +114,8 @@ static inline int dev_pm_qos_request_active(struct dev_pm_qos_request *req)
 
 int pm_qos_update_target(struct pm_qos_constraints *c, struct plist_node *node,
 			 enum pm_qos_req_action action, int value);
+int pm_qos_update_constraints(int pm_qos_class,
+			struct pm_qos_constraints *constraints);
 void pm_qos_add_request(struct pm_qos_request *req, int pm_qos_class,
 			s32 value);
 void pm_qos_update_request(struct pm_qos_request *req,

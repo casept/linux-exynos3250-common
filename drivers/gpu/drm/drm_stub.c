@@ -91,7 +91,7 @@ void drm_ut_debug_printk(unsigned int request_level,
 
 	if (drm_debug & request_level) {
 		if (function_name)
-			printk(KERN_DEBUG "[%s:%s], ", prefix, function_name);
+			printk(KERN_INFO "[%s:%s], ", prefix, function_name);
 		va_start(args, format);
 		vprintk(format, args);
 		va_end(args);

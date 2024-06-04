@@ -470,6 +470,7 @@ struct transaction_s
 		T_COMMIT,
 		T_COMMIT_DFLUSH,
 		T_COMMIT_JFLUSH,
+		T_COMMIT_CALLBACK,
 		T_FINISHED
 	}			t_state;
 
@@ -596,6 +597,16 @@ struct transaction_s
 	 * waiting for it to finish.
 	 */
 	unsigned int t_synchronous_commit:1;
+
+	/*
+	 * This transaction's callback is invoked [j_list_lock]
+	 */
+	unsigned int t_callbacked:1;
+
+	/*
+	 * This transaction is dropped [j_list_lock]
+	 */
+	unsigned int t_dropped:1;
 
 	/* Disk flush needs to be sent to fs partition [no locking] */
 	int			t_need_data_flush;

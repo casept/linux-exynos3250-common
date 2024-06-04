@@ -215,6 +215,7 @@ struct mipi_dsim_config {
  *	this variable would be set by driver according to e_no_data_lane
  *	automatically.
  * @e_clk_src: select byte clock source.
+ * @ddata: pointer to MIPI-DSI driver data.
  * @pd: pointer to MIPI-DSI driver platform data.
  */
 struct mipi_dsim_device {
@@ -230,13 +231,36 @@ struct mipi_dsim_device {
 	struct mipi_dsim_master_ops	*master_ops;
 	struct mipi_dsim_lcd_device	*dsim_lcd_dev;
 	struct mipi_dsim_lcd_driver	*dsim_lcd_drv;
+	struct completion		wr_comp;
+	struct completion		rd_comp;
+	struct completion		fd_comp;
+	void				*src_pdev;
 
 	unsigned int			state;
+	unsigned int			tm_state;
 	unsigned int			data_lane;
 	unsigned int			e_clk_src;
-	bool				suspended;
+	unsigned int			clk_status;
+	unsigned int			dpms;
+	atomic_t			pwr_gate;
+	atomic_t			dpms_on;
 
+	struct mipi_dsim_driverdata	*ddata;
 	struct mipi_dsim_platform_data	*pd;
+};
+
+/*
+ * struct mipi_dsim_driverdata - interface to driver data
+ *	for mipi-dsi driver.
+ *
+ * @clk_name: specifies clock name of SoC.
+ * @num_supply: number of supplies.
+ * @supplies: list of supplies.
+ */
+struct mipi_dsim_driverdata {
+	char *clk_name;
+	int num_supply;
+	struct regulator_bulk_data *supplies;
 };
 
 /*
@@ -249,6 +273,7 @@ struct mipi_dsim_device {
  * @enabled: indicate whether mipi controller got enabled or not.
  * @lcd_panel_info: pointer for lcd panel specific structure.
  *	this structure specifies width, height, timing and polarity and so on.
+ * @src_pdev: display controller platform dev;
  * @phy_enable: pointer to a callback controlling D-PHY enable/reset
  */
 struct mipi_dsim_platform_data {
@@ -257,6 +282,7 @@ struct mipi_dsim_platform_data {
 	struct mipi_dsim_config		*dsim_config;
 	unsigned int			enabled;
 	void				*lcd_panel_info;
+	void				*src_pdev;
 
 	int (*phy_enable)(struct platform_device *pdev, bool on);
 };
@@ -278,11 +304,17 @@ struct mipi_dsim_platform_data {
  *  @set_blank_mode: set framebuffer blank mode.
  *	- this callback should be called after fb_blank() by a client driver
  *	only if needing.
+ *  @wait_for_frame_done: wait for until whole image frame is transferred.
+ *  @set_refresh_rate: set refresh rate to support dynamic refresh feature.
+ *  @update_panel_refresh: update the panel self refresh rate change.
  */
 
 struct mipi_dsim_master_ops {
 	int (*cmd_write)(struct mipi_dsim_device *dsim, unsigned int data_id,
 		const unsigned char *data0, unsigned int data1);
+	int (*atomic_cmd_write)(struct mipi_dsim_device *dsim,
+				unsigned int data_id,
+				const unsigned char *data0, unsigned int data1);
 	int (*cmd_read)(struct mipi_dsim_device *dsim, unsigned int data_id,
 		unsigned int data0, unsigned int req_size, u8 *rx_buf);
 	int (*get_dsim_frame_done)(struct mipi_dsim_device *dsim);
@@ -292,6 +324,19 @@ struct mipi_dsim_master_ops {
 	void (*trigger)(struct fb_info *info);
 	int (*set_early_blank_mode)(struct mipi_dsim_device *dsim, int power);
 	int (*set_blank_mode)(struct mipi_dsim_device *dsim, int power);
+	int (*set_refresh_rate)(struct mipi_dsim_device *dsim, int refresh);
+	void (*standby)(struct mipi_dsim_device *dsim, unsigned int enable,
+			unsigned int wait);
+	int (*wait_for_frame_done)(struct mipi_dsim_device *dsim);
+	void (*stop_trigger)(struct mipi_dsim_device *dsim, unsigned int stop);
+	int (*set_clock_mode)(struct mipi_dsim_device *dsim, unsigned int mode);
+	int (*runtime_active)(struct mipi_dsim_device *dsim, bool enable);
+	int (*set_runtime_active)(struct mipi_dsim_device *dsim);
+	int (*set_smies_active)(struct mipi_dsim_device *dsim, bool enable);
+	int (*set_smies_mode)(struct mipi_dsim_device *dsim, int mode);
+	void (*update_panel_refresh)(struct mipi_dsim_device *dsim, unsigned int rate);
+	int (*set_partial_region)(struct mipi_dsim_device *dsim, void *pos);
+	int (*fimd_trigger)(struct mipi_dsim_device *dsim);
 };
 
 /*
@@ -335,14 +380,25 @@ struct mipi_dsim_lcd_device {
 struct mipi_dsim_lcd_driver {
 	char			*name;
 	int			id;
+	unsigned int		if_type;
 
 	void	(*power_on)(struct mipi_dsim_lcd_device *dsim_dev, int enable);
+	int	(*check_mtp)(struct mipi_dsim_lcd_device *dsim_dev);
 	void	(*set_sequence)(struct mipi_dsim_lcd_device *dsim_dev);
+	void	(*display_on)(struct mipi_dsim_lcd_device *dsim_dev,
+				unsigned int enable);
 	int	(*probe)(struct mipi_dsim_lcd_device *dsim_dev);
 	int	(*remove)(struct mipi_dsim_lcd_device *dsim_dev);
 	void	(*shutdown)(struct mipi_dsim_lcd_device *dsim_dev);
 	int	(*suspend)(struct mipi_dsim_lcd_device *dsim_dev);
 	int	(*resume)(struct mipi_dsim_lcd_device *dsim_dev);
+	int (*set_refresh_rate)(struct mipi_dsim_lcd_device *dsim_dev,
+		int refresh);
+	int (*set_partial_region)(struct mipi_dsim_lcd_device *dsim_dev,
+					int offset_x, int offset_y,
+					int width, int height);
+	void (*panel_pm_check)(struct mipi_dsim_lcd_device *dsim_dev,
+							bool *pm_op);
 };
 
 /*
@@ -356,4 +412,5 @@ int exynos_mipi_dsi_register_lcd_device(struct mipi_dsim_lcd_device
  */
 int exynos_mipi_dsi_register_lcd_driver(struct mipi_dsim_lcd_driver
 						*lcd_drv);
+int s5p_dsim_phy_enable(struct platform_device *pdev, bool on);
 #endif /* _EXYNOS_MIPI_DSIM_H */

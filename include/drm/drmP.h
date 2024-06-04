@@ -312,6 +312,7 @@ struct drm_ioctl_desc {
 	int flags;
 	drm_ioctl_t *func;
 	unsigned int cmd_drv;
+	const char *name;
 };
 
 /**
@@ -320,7 +321,7 @@ struct drm_ioctl_desc {
  */
 
 #define DRM_IOCTL_DEF_DRV(ioctl, _func, _flags)			\
-	[DRM_IOCTL_NR(DRM_##ioctl)] = {.cmd = DRM_##ioctl, .func = _func, .flags = _flags, .cmd_drv = DRM_IOCTL_##ioctl}
+	[DRM_IOCTL_NR(DRM_##ioctl)] = {.cmd = DRM_##ioctl, .func = _func, .flags = _flags, .cmd_drv = DRM_IOCTL_##ioctl, .name = #ioctl}
 
 struct drm_magic_entry {
 	struct list_head head;
@@ -770,6 +771,15 @@ struct drm_driver {
 	u32 (*get_vblank_counter) (struct drm_device *dev, int crtc);
 
 	/**
+	 * prepare_vblank - prepare wating vblank
+	 * @dev: DRM device
+	 * @crtc: which irq to enable
+	 *
+	 * Prepare vblank waiting @crtc.
+	 */
+	void (*prepare_vblank) (struct drm_device *dev, int crtc);
+
+	/**
 	 * enable_vblank - enable vblank interrupt events
 	 * @dev: DRM device
 	 * @crtc: which irq to enable
@@ -1204,6 +1214,12 @@ struct drm_device {
 	/*@{ */
 	spinlock_t object_name_lock;
 	struct idr object_name_idr;
+
+	/*
+	 * prime_lock - protects dma buf state of exported GEM objects
+	 */
+	struct mutex prime_lock;
+
 	/*@} */
 	int switch_power_state;
 
@@ -1439,6 +1455,8 @@ extern int drm_vblank_wait(struct drm_device *dev, unsigned int *vbl_seq);
 extern u32 drm_vblank_count(struct drm_device *dev, int crtc);
 extern u32 drm_vblank_count_and_time(struct drm_device *dev, int crtc,
 				     struct timeval *vblanktime);
+extern void drm_send_vblank_event(struct drm_device *dev, int crtc,
+				     struct drm_pending_vblank_event *e);
 extern bool drm_handle_vblank(struct drm_device *dev, int crtc);
 extern int drm_vblank_get(struct drm_device *dev, int crtc);
 extern void drm_vblank_put(struct drm_device *dev, int crtc);
