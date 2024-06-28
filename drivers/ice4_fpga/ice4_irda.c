@@ -56,13 +56,19 @@ struct ice4_fpga_data {
 	int gpio_cdone;
 };
 
+static void print_fpga_gpio_status(struct ice4_fpga_data *data);
+
 static int ack_number;
 static int count_number;
 
 static int ice4_irda_check_cdone(struct ice4_fpga_data *data)
 {
-	if (!data->gpio_cdone)
+  pr_debug("%s: GPIO status before\n", __func__);
+	print_fpga_gpio_status(data);
+	if (!data->gpio_cdone) {
+	  pr_debug("CDONE done!\n");
 		return 1;
+	}
 
 	/* Device in Operation when CDONE='1'; Device Failed when CDONE='0'. */
 	if (gpio_get_value(data->gpio_cdone) != 1) {
@@ -80,6 +86,8 @@ static void print_fpga_gpio_status(struct ice4_fpga_data *data)
 	if (data->gpio_cdone)
 		pr_info("%s : CDONE    : %d\n", __func__,
 				gpio_get_value(data->gpio_cdone));
+	else
+		pr_info("%s : CDONE    : <not in data>\n", __func__);
 	pr_info("%s : RST_N    : %d\n", __func__,
 			gpio_get_value(data->gpio_fpga_rst_n));
 	pr_info("%s : CRESET_B : %d\n", __func__,
@@ -124,6 +132,9 @@ static void ir_remocon_work(struct ice4_fpga_data *data, int count)
 	int ack_pin_onoff;
 	int retry_count = 0;
 
+  pr_debug("%s: GPIO status before\n", __func__);
+	print_fpga_gpio_status(data);
+
 	data->i2c_block_transfer.addr = 0x00;
 
 	data->i2c_block_transfer.data[0] = count >> 8;
@@ -141,6 +152,8 @@ static void ir_remocon_work(struct ice4_fpga_data *data, int count)
 	buf_size++;
 	ret = i2c_master_send(client,
 		(unsigned char *) &(data->i2c_block_transfer), buf_size);
+	pr_debug("%s: sending %d bytes to I2C addr %d\n", __func__, buf_size, data->i2c_block_transfer.addr);
+	print_hex_dump_bytes("ice4_irda: ir_remocon_work: I2C send: ", DUMP_PREFIX_OFFSET, data->i2c_block_transfer.data, buf_size);
 	if (ret < 0) {
 		dev_err(&client->dev, "%s: err1 %d\n", __func__, ret);
 		ret = i2c_master_send(client,
@@ -208,7 +221,8 @@ static ssize_t remocon_store(struct device *dev, struct device_attribute *attr,
 
 	irled_ldo(true);
 
-	pr_info("%s : ir_send called\n", __func__);
+	pr_debug("%s : called with buffer of size %zu\n", __func__, size);
+	print_hex_dump_bytes("ice4_irda: buffer from user: ", DUMP_PREFIX_OFFSET, buf, size);
 
 	for (i = 0; i < MAX_SIZE; i++) {
 		if (sscanf(buf++, "%u", &value) == 1) {
@@ -217,6 +231,7 @@ static ssize_t remocon_store(struct device *dev, struct device_attribute *attr,
 
 			if (data->count == 2) {
 				data->ir_freq = value;
+				pr_debug("%s : IR freq: %ud\n", __func__, value);
 				data->i2c_block_transfer.data[2] = value >> 16;
 				data->i2c_block_transfer.data[3]
 							= (value >> 8) & 0xFF;
@@ -243,6 +258,13 @@ static ssize_t remocon_store(struct device *dev, struct device_attribute *attr,
 	}
 
 	ir_remocon_work(data, data->count);
+	pr_debug("%s : Count: %d, ID: %d, IR Freq: %d, IR Sum: %d\n",
+	  __func__,
+   	data->count,
+   	data->dev_id,
+   	data->ir_freq,
+   	data->ir_sum);
+  print_hex_dump_bytes("ice4_irda: buffer for work: ", DUMP_PREFIX_OFFSET, data, data->count);
 
 	irled_ldo(false);
 
@@ -288,9 +310,10 @@ static int irda_read_device_info(struct ice4_fpga_data *data)
 	u8 buf_ir_test[8];
 	int ret;
 
-	pr_info("%s: called\n", __func__);
+	pr_debug("%s: called\n", __func__);
 
 	ret = i2c_master_recv(client, buf_ir_test, READ_LENGTH);
+	print_hex_dump_bytes("ice4_irda: irda_read_device_info: I2C recv: ", DUMP_PREFIX_OFFSET, buf_ir_test, READ_LENGTH);
 
 	if (ret < 0)
 		dev_err(&client->dev, "%s: err %d\n", __func__, ret);
@@ -382,6 +405,8 @@ static ssize_t irda_test_store(struct device *dev,
 	i2c_block_transfer.addr = IRDA_TEST_CODE_ADDR;
 	ret = i2c_master_send(client, (unsigned char *) &i2c_block_transfer,
 			IRDA_TEST_CODE_SIZE);
+	pr_debug("%s: sending %d bytes to I2C addr %d\n", __func__, IRDA_TEST_CODE_SIZE, i2c_block_transfer.addr);
+	print_hex_dump_bytes("ice4_irda: irda_test_store: I2C send: ", DUMP_PREFIX_OFFSET, i2c_block_transfer.data, IRDA_TEST_CODE_SIZE);
 	if (ret < 0) {
 		pr_err("%s: err1 %d\n", __func__, ret);
 		ret = i2c_master_send(client,
@@ -421,8 +446,7 @@ static int __devinit ice4_irda_probe(struct i2c_client *client,
 	struct ice4_fpga_data *data;
 	struct device *ice4_irda_dev;
 	struct ice4_irda_platform_data *pdata;
-
-	pr_debug("%s: probe!\n", __func__);
+	struct regulator *regulator_irled;
 
 	if (!i2c_check_functionality(adapter, I2C_FUNC_I2C))
 		return -EIO;
@@ -438,6 +462,10 @@ static int __devinit ice4_irda_probe(struct i2c_client *client,
 		goto err_platdata;
 	}
 
+	pr_debug("%s: probe!\n", __func__);
+  pr_debug("%s: GPIO status before (1)\n", __func__);
+	print_fpga_gpio_status(data);
+
 	pdata = client->dev.platform_data;
 	data->gpio_irda_irq = pdata->gpio_irda_irq;
 	data->gpio_fpga_rst_n = pdata->gpio_fpga_rst_n;
@@ -449,12 +477,23 @@ static int __devinit ice4_irda_probe(struct i2c_client *client,
 		pr_err("%s: platform data was not filled\n", __func__);
 		goto err_platdata;
 	}
+  pr_debug("%s: GPIO status before (2)\n", __func__);
+	print_fpga_gpio_status(data);
 
 	if (ice4_irda_check_cdone(data))
 		pr_err("FPGA FW is loaded!\n");
 	else
 		pr_err("FPGA FW is NOT loaded!\n");
 
+	regulator_irled = regulator_get(NULL, "v_irled_3.3");
+	if (IS_ERR(regulator_irled)) {
+		pr_info("%s : unable to get regulator!\n", __func__);
+		return PTR_ERR(regulator_irled);
+	}
+
+	pr_info("%s : irled regulator enabled: %d!\n", __func__, regulator_is_enabled(regulator_irled));
+
+	pr_debug("%s: FPGA RST N setting high", __func__);
 	gpio_set_value(data->gpio_fpga_rst_n, GPIO_LEVEL_HIGH);
 
 	data->client = client;
@@ -495,6 +534,7 @@ static int __devexit ice4_irda_remove(struct i2c_client *client)
 static int ice4_irda_suspend(struct device *dev)
 {
 	struct ice4_fpga_data *data = dev_get_drvdata(dev);
+	pr_debug("%s: FPGA RST N setting low", __func__);
 	gpio_set_value(data->gpio_fpga_rst_n, GPIO_LEVEL_LOW);
 	return 0;
 }
@@ -502,6 +542,7 @@ static int ice4_irda_suspend(struct device *dev)
 static int ice4_irda_resume(struct device *dev)
 {
 	struct ice4_fpga_data *data = dev_get_drvdata(dev);
+	pr_debug("%s: FPGA RST N setting high", __func__);
 	gpio_set_value(data->gpio_fpga_rst_n, GPIO_LEVEL_HIGH);
 	return 0;
 }
