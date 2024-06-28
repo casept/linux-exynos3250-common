@@ -18,11 +18,89 @@
 #define RECEIVEBUFFERSIZE	12
 #define DEBUG_SHOW_DATA	0
 
+static const char* sensor_type_2str(u8 uSensorType) {
+	    switch (uSensorType) {
+        case ACCELEROMETER_SENSOR:
+            return "ACCELEROMETER_SENSOR";
+        case GYROSCOPE_SENSOR:
+            return "GYROSCOPE_SENSOR";
+        case GEOMAGNETIC_UNCALIB_SENSOR:
+            return "GEOMAGNETIC_UNCALIB_SENSOR";
+        case GEOMAGNETIC_RAW:
+            return "GEOMAGNETIC_RAW";
+        case GEOMAGNETIC_SENSOR:
+            return "GEOMAGNETIC_SENSOR";
+        case PRESSURE_SENSOR:
+            return "PRESSURE_SENSOR";
+        case GESTURE_SENSOR:
+            return "GESTURE_SENSOR";
+        case PROXIMITY_SENSOR:
+            return "PROXIMITY_SENSOR";
+        case TEMPERATURE_HUMIDITY_SENSOR:
+            return "TEMPERATURE_HUMIDITY_SENSOR";
+        case LIGHT_SENSOR:
+            return "LIGHT_SENSOR";
+        case PROXIMITY_RAW:
+            return "PROXIMITY_RAW";
+        case ORIENTATION_SENSOR:
+            return "ORIENTATION_SENSOR";
+        case STEP_DETECTOR:
+            return "STEP_DETECTOR";
+        case SIG_MOTION_SENSOR:
+            return "SIG_MOTION_SENSOR";
+        case GYRO_UNCALIB_SENSOR:
+            return "GYRO_UNCALIB_SENSOR";
+        case GAME_ROTATION_VECTOR:
+            return "GAME_ROTATION_VECTOR";
+        case ROTATION_VECTOR:
+            return "ROTATION_VECTOR";
+        case STEP_COUNTER:
+            return "STEP_COUNTER";
+        case BIO_HRM_RAW:
+            return "BIO_HRM_RAW";
+        case BIO_HRM_RAW_FAC:
+            return "BIO_HRM_RAW_FAC";
+        case BIO_HRM_LIB:
+            return "BIO_HRM_LIB";
+        case SENSOR_MAX:
+            return "SENSOR_MAX";
+        default:
+            return "UNKNOWN_SENSOR";
+      }
+}
+
+static const char* sensor_instruction_cmd2string(u8 uInstr)
+{
+  switch (uInstr) {
+      case REMOVE_SENSOR:
+          return "REMOVE_SENSOR";
+      case ADD_SENSOR:
+          return "ADD_SENSOR";
+      case CHANGE_DELAY:
+          return "CHANGE_DELAY";
+      case GO_SLEEP:
+          return "GO_SLEEP";
+      case REMOVE_LIBRARY:
+          return "REMOVE_LIBRARY";
+      case ADD_LIBRARY:
+          return "ADD_LIBRARY";
+      case GET_LOGGING:
+          return "GET_LOGGING";
+      default:
+          return "UNKNOWN_ACTION";
+  }
+}
+
 static void clean_msg(struct ssp_msg *msg)
 {
 	if (msg->free_buffer)
 		kfree(msg->buffer);
 	kfree(msg);
+}
+
+static void ssp_dump_msg(const char* func, const struct ssp_msg* msg) {
+  ssp_dbg("[SSP]: %s : MSG : [cmd: %d, length: %d, options: %d, data: %d]\n",
+      func, msg->cmd, msg->length, msg->options, msg->data);
 }
 
 static int do_transfer(struct ssp_data *data, struct ssp_msg *msg,
@@ -36,6 +114,8 @@ static int do_transfer(struct ssp_data *data, struct ssp_msg *msg,
 	msg->dead_hook = &msg_dead;
 	msg->dead = false;
 	msg->done = done;
+
+  ssp_dump_msg(__func__, msg);
 
 	mutex_lock(&data->comm_mutex);
 
@@ -52,6 +132,7 @@ static int do_transfer(struct ssp_data *data, struct ssp_msg *msg,
 	}
 
 	status = spi_write(data->spi, msg, 9) >= 0;
+ 	print_hex_dump_bytes("[SSP]: do_transfer : SPI write: ", DUMP_PREFIX_OFFSET, msg, 9);
 	if (status == 0) {
 		pr_err("[SSP]: %s spi_write fail!!\n", __func__);
 		gpio_set_value_cansleep(data->ap_int, 1);
@@ -147,6 +228,7 @@ int select_irq_msg(struct ssp_data *data)
 	char chTempBuf[4] = { -1 };
 
 	iRet = spi_read(data->spi, chTempBuf, sizeof(chTempBuf));
+	print_hex_dump_bytes("[SSP]: select_irq_msg: SPI read: ", DUMP_PREFIX_OFFSET, chTempBuf, sizeof(chTempBuf));
 	if (iRet < 0) {
 		pr_err("[SSP]: %s spi_read fail!!\n", __func__);
 		return ERROR;
@@ -182,8 +264,10 @@ int select_irq_msg(struct ssp_data *data)
 
 			if (msg_type == AP2HUB_READ)
 				iRet = spi_read(data->spi, msg->buffer, msg->length);
+      	print_hex_dump_bytes("[SSP]: SPI AP2HUB_READ: ", DUMP_PREFIX_OFFSET, msg->buffer, msg->length);
 			if (msg_type == AP2HUB_WRITE) {
 				iRet = spi_write(data->spi, msg->buffer, msg->length);
+      	print_hex_dump_bytes("[SSP]: SPI AP2HUB_WRITE: ", DUMP_PREFIX_OFFSET, msg->buffer, msg->length);
 				if (msg_options & AP2HUB_RETURN) {
 					msg->options = AP2HUB_READ | AP2HUB_RETURN;
 					msg->length = 1;
@@ -211,6 +295,7 @@ exit:
 			break;
 		}
 		iRet = spi_read(data->spi, buffer, chLength);
+      	print_hex_dump_bytes("[SSP]: SPI HUB2AP_READ: ", DUMP_PREFIX_OFFSET, buffer, chLength);
 		if (iRet < 0)
 			pr_err("[SSP] %s spi_read fail\n", __func__);
 		else
@@ -298,6 +383,7 @@ int send_instruction(struct ssp_data *data, u8 uInst,
 		break;
 	case ADD_SENSOR:
 	case GET_LOGGING:
+		pr_err("[SSP] %s - Bypass Add sensor instruction encountered (sensor type: 0x%x) ", __func__, uSensorType);
 		command = MSG2SSP_INST_BYPASS_SENSOR_ADD;
 		break;
 	case CHANGE_DELAY:
@@ -334,8 +420,8 @@ int send_instruction(struct ssp_data *data, u8 uInst,
 	if (uSensorType == BIO_HRM_RAW_FAC)
 		msg->buffer[10] = 1;
 
-	ssp_dbg("[SSP]: %s - Inst = 0x%x, Sensor Type = 0x%x, data = %u\n",
-			__func__, command, uSensorType, msg->buffer[1]);
+	ssp_dbg("[SSP]: %s - command = 0x%x, Inst = 0x%x (%s), Sensor Type = 0x%x (%s), data = %u\n",
+			__func__, command, uInst, sensor_instruction_cmd2string(uInst), uSensorType, sensor_type_2str(uSensorType), msg->buffer[1]);
 
 	iRet = ssp_spi_async(data, msg);
 
@@ -371,6 +457,7 @@ int send_instruction_sync(struct ssp_data *data, u8 uInst,
 		command = MSG2SSP_INST_BYPASS_SENSOR_REMOVE;
 		break;
 	case ADD_SENSOR:
+		pr_err("[SSP] %s - Bypass Add sensor instruction encountered (sensor type: %d) ", __func__, uSensorType);
 		command = MSG2SSP_INST_BYPASS_SENSOR_ADD;
 		break;
 	case CHANGE_DELAY:
@@ -405,8 +492,8 @@ int send_instruction_sync(struct ssp_data *data, u8 uInst,
 	msg->buffer[0] = uSensorType;
 	memcpy(&msg->buffer[1], uSendBuf, uLength);
 
-	ssp_dbg("[SSP]: %s - Inst = 0x%x, Sensor Type = %u, data = %u\n",
-			__func__, command, uSensorType, msg->buffer[0]);
+	ssp_dbg("[SSP]: %s - command = 0x%x, Inst = 0x%x (%s), Sensor Type = 0x%x (%s), data = %u\n",
+			__func__, command, uInst, sensor_instruction_cmd2string(uInst), uSensorType, sensor_type_2str(uSensorType), msg->buffer[0]);
 
 	iRet = ssp_spi_sync(data, msg, 1000);
 
